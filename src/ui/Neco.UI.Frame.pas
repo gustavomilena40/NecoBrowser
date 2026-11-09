@@ -42,12 +42,17 @@ function NecoFrameIsMinimized(AForm: TCommonCustomForm): Boolean;
 function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
 /// Milissegundos desde a última tecla ou movimento de mouse no sistema todo.
 function NecoSystemIdleMs: Cardinal;
+/// Abre o arquivo com o programa padrão do sistema.
+procedure NecoShellOpen(const APath: string);
+/// Abre a pasta do arquivo, com ele selecionado.
+procedure NecoShowInFolder(const APath: string);
 
 implementation
 
 {$IFDEF MSWINDOWS}
 uses
-  Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, FMX.Platform.Win, Neco.Core.Trace;
+  Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Winapi.ShellAPI, FMX.Platform.Win,
+  Neco.Core.Trace;
 
 var
   GWnd: HWND;
@@ -284,6 +289,18 @@ begin
     Result := 0;
 end;
 
+procedure NecoShellOpen(const APath: string);
+begin
+  if APath <> '' then
+    ShellExecute(0, 'open', PChar(APath), nil, nil, SW_SHOWNORMAL);
+end;
+
+procedure NecoShowInFolder(const APath: string);
+begin
+  if APath <> '' then
+    ShellExecute(0, 'open', 'explorer.exe', PChar('/select,"' + APath + '"'), nil, SW_SHOWNORMAL);
+end;
+
 {$ELSE}
 
 procedure NecoFrameAttach(AForm: TCommonCustomForm; ATitleHeight: Single;
@@ -321,6 +338,14 @@ end;
 function NecoSystemIdleMs: Cardinal;
 begin
   Result := 0;
+end;
+
+procedure NecoShellOpen(const APath: string);
+begin
+end;
+
+procedure NecoShowInFolder(const APath: string);
+begin
 end;
 
 {$ENDIF}

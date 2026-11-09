@@ -47,6 +47,9 @@ ANIMS = {
     'lazy':   ('nek68', list(range(10)), 130, True),              # deitada (ociosa)
     'cheer':  ('nek81', [0, 1, 2, 3, 4, 3, 2, 3, 4], 100, False),  # comemora
     'taunt':  ('nek80', [0, 1, 2, 1, 2, 1, 0], 120, False),       # ri (clique nela)
+    # Página de erro (Neco.UI.Main, sobre a área da página)
+    'stretcher': ('nek88', [0, 1, 2, 1], 420, True),             # na maca: sem internet
+    'tumble': ('nek24', list(range(19)), 85, True),               # tombo: site não encontrado
 }
 
 

@@ -20,12 +20,14 @@ type
     FTheme: TNecoTheme;
     FBlockerEnabled: Boolean;
     FHomeUrl: string;
+    FCustomDir: Boolean;
     function GetSettingsFile: string;
     function GetBookmarksFile: string;
     function GetHistoryFile: string;
     function GetDownloadsDir: string;
   public
-    /// ADataDir vazio usa o padrão da plataforma. Os testes passam uma pasta temporária.
+    /// ADataDir vazio usa o padrão da plataforma. Os testes passam uma pasta temporária
+    /// (e aí os downloads também vão para dentro dela).
     constructor Create(const ADataDir: string = '');
     procedure Load;
     procedure Save;
@@ -62,6 +64,7 @@ begin
   begin
     FDataDir := ADataDir;
     FWebDataDir := TPath.Combine(ADataDir, 'web');
+    FCustomDir := True;
   end
   else
   begin
@@ -91,7 +94,10 @@ end;
 
 function TNecoSettings.GetDownloadsDir: string;
 begin
-  Result := TPath.GetDownloadsPath;
+  if FCustomDir then
+    Result := ''
+  else
+    Result := TPath.GetDownloadsPath;
   if Result = '' then
     Result := TPath.Combine(FDataDir, 'Downloads');
 end;

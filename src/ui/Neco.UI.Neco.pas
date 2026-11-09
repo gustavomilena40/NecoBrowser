@@ -86,7 +86,12 @@ type
     /// Clique na Neco: ela ri.
     procedure Poke;
     /// Algo bom aconteceu (página com anúncios bloqueados, download concluído).
-    procedure Celebrate;
+    /// Sem AForce, no máximo uma comemoração por minuto.
+    procedure Celebrate(AForce: Boolean = False);
+    /// Uma reação avulsa no assento (ex.: 'turn' ao favoritar), se ela estiver parada.
+    procedure Perform(const AName: string);
+    /// Liga ou desliga a Neco da faixa (configuração "Mostrar a Neco").
+    procedure SetShown(AValue: Boolean);
     /// Centro do assento, em coordenadas do controle.
     property SeatX: Single read FSeatX write SetSeatX;
     property Loading: Boolean read FLoading write SetLoading;
@@ -97,6 +102,36 @@ type
     /// Os sprites carregaram? Sem eles a Neco simplesmente não aparece.
     property Active: Boolean read FActive;
   end;
+
+  /// Uma Neco avulsa tocando uma animação em loop, num lugar fixo (painéis vazios,
+  /// página de erro, configurações). Desenhada em escala inteira, com os pés na base do
+  /// controle e centralizada na horizontal. Animação sem loop recomeça depois de uma pausa.
+  TNecoSprite = class(TControl)
+  private
+    FTimer: TTimer;
+    FClock: TStopwatch;
+    FLastMs: Int64;
+    FAnim: TNecoAnim;
+    FFrame: Integer;
+    FFrameMs: Double;
+    FPauseMs: Double;
+    FScale: Integer;
+    procedure Tick(Sender: TObject);
+    procedure SetAnimName(const AValue: string);
+    function GetAnimName: string;
+  protected
+    procedure Paint; override;
+  public
+    constructor Create(AOwner: TComponent); override;
+    /// Tamanho do desenho (largura x altura da folha vezes a escala), para o layout.
+    function NaturalSize: TSizeF;
+    property AnimName: string read GetAnimName write SetAnimName;
+    property Scale: Integer read FScale write FScale;
+  end;
+
+/// Configuração "Mostrar a Neco": desligada, nenhuma Neco desenha nem anima.
+procedure NecoSetShown(AValue: Boolean);
+function NecoShown: Boolean;
 
 implementation
 
@@ -118,6 +153,17 @@ const
 var
   GAnims: TObjectDictionary<string, TNecoAnim>;
   GLoaded: Boolean;
+  GShown: Boolean = True;
+
+procedure NecoSetShown(AValue: Boolean);
+begin
+  GShown := AValue;
+end;
+
+function NecoShown: Boolean;
+begin
+  Result := GShown;
+end;
 
 { Carga dos sprites }
 
@@ -334,7 +380,7 @@ end;
 
 procedure TNecoStage.Poke;
 begin
-  if FActive and not FInStep and (FQueue.Count = 0) and not FLoading then
+  if FActive and GShown and not FInStep and (FQueue.Count = 0) and not FLoading then
   begin
     FLazy := False;
     Enqueue('taunt');
@@ -342,16 +388,42 @@ begin
   end;
 end;
 
-procedure TNecoStage.Celebrate;
+procedure TNecoStage.Celebrate(AForce: Boolean);
 var
   T: Int64;
 begin
   T := FClock.ElapsedMilliseconds;
-  if not FActive or FInStep or (FQueue.Count > 0) or (T - FLastCheerMs < CCheerGapMs) then
+  if not FActive or not GShown or FInStep or (FQueue.Count > 0) or
+    (not AForce and (T - FLastCheerMs < CCheerGapMs)) then
     Exit;
   FLastCheerMs := T;
+  FLazy := False;
   Enqueue('cheer');
   NextStep;
+end;
+
+procedure TNecoStage.Perform(const AName: string);
+begin
+  if not FActive or not GShown or FInStep or (FQueue.Count > 0) then
+    Exit;
+  FLazy := False;
+  Enqueue(AName);
+  NextStep;
+end;
+
+procedure TNecoStage.SetShown(AValue: Boolean);
+begin
+  NecoSetShown(AValue);
+  if not AValue then
+  begin
+    // Some na hora, mesmo no meio de uma aparição.
+    FQueue.Clear;
+    FInStep := False;
+    FX := FSeatX;
+    if FActive then
+      Play(BaseAnim);
+  end;
+  Repaint;
 end;
 
 procedure TNecoStage.SetSeatX(AValue: Single);
@@ -409,7 +481,7 @@ var
   R: TRectF;
 begin
   Result := False;
-  if not FActive or (FAnim = nil) or (FInStep and FStep.Cross) then
+  if not FActive or not GShown or (FAnim = nil) or (FInStep and FStep.Cross) then
     Exit;
   R := ActorRect;
   R.Inflate(-4, -2);
@@ -427,7 +499,7 @@ begin
   Dt := Min(T - FLastMs, 250);
   FLastMs := T;
 
-  if Assigned(FCanAnimate) and not FCanAnimate() then
+  if not GShown or (Assigned(FCanAnimate) and not FCanAnimate()) then
   begin
     FTimer.Interval := CIdleTickMs;
     Exit;
@@ -510,7 +582,7 @@ var
   SS, Sc: Single;
   Exact: Boolean;
 begin
-  if not FActive or (FAnim = nil) or (FAnim.Sheet = nil) then
+  if not FActive or not GShown or (FAnim = nil) or (FAnim.Sheet = nil) then
     Exit;
   if Assigned(FCanAnimate) and not FCanAnimate() then
     Exit;
@@ -523,6 +595,122 @@ begin
   Sc := DrawScale(FAnim) * SS;
   Exact := Abs(Sc - Round(Sc)) < 0.01;
   Canvas.DrawBitmap(FAnim.Sheet, FAnim.SourceRect(Min(FFrame, FAnim.Frames - 1)), R, AbsoluteOpacity, Exact);
+end;
+
+{ TNecoSprite }
+
+const
+  CSpritePauseMs = 1800; // pausa antes de repetir uma animação sem loop
+
+constructor TNecoSprite.Create(AOwner: TComponent);
+begin
+  inherited Create(AOwner);
+  HitTest := False;
+  FScale := 2;
+  LoadSprites;
+  FClock := TStopwatch.StartNew;
+  FTimer := TTimer.Create(Self);
+  FTimer.Interval := CTickMs;
+  FTimer.OnTimer := Tick;
+  FTimer.Enabled := False;
+end;
+
+function TNecoSprite.GetAnimName: string;
+begin
+  if FAnim <> nil then
+    Result := FAnim.Name
+  else
+    Result := '';
+end;
+
+procedure TNecoSprite.SetAnimName(const AValue: string);
+begin
+  FAnim := Anim(AValue);
+  FFrame := 0;
+  FFrameMs := 0;
+  FPauseMs := 0;
+  FLastMs := FClock.ElapsedMilliseconds;
+  FTimer.Enabled := FAnim <> nil;
+  Repaint;
+end;
+
+function TNecoSprite.NaturalSize: TSizeF;
+begin
+  if FAnim = nil then
+    Result := TSizeF.Create(0, 0)
+  else
+    Result := TSizeF.Create(FAnim.W * FScale, FAnim.H * FScale);
+end;
+
+procedure TNecoSprite.Tick(Sender: TObject);
+var
+  T: Int64;
+  Dt: Double;
+  Changed: Boolean;
+begin
+  T := FClock.ElapsedMilliseconds;
+  Dt := Min(T - FLastMs, 250);
+  FLastMs := T;
+  // Escondida (painel fechado, Neco desligada): tique lento e sem desenho.
+  if (FAnim = nil) or not GShown or not ParentedVisible then
+  begin
+    FTimer.Interval := CIdleTickMs;
+    Exit;
+  end;
+  FTimer.Interval := CTickMs;
+  if FPauseMs > 0 then
+  begin
+    FPauseMs := FPauseMs - Dt;
+    if FPauseMs > 0 then
+      Exit;
+    FFrame := 0;
+    FFrameMs := 0;
+    Repaint;
+    Exit;
+  end;
+  Changed := False;
+  FFrameMs := FFrameMs + Dt;
+  while FFrameMs >= FAnim.FrameMs do
+  begin
+    FFrameMs := FFrameMs - FAnim.FrameMs;
+    Inc(FFrame);
+    Changed := True;
+    if FFrame >= FAnim.Frames then
+    begin
+      if FAnim.Loop then
+        FFrame := 0
+      else
+      begin
+        FFrame := FAnim.Frames - 1;
+        FPauseMs := CSpritePauseMs;
+        Break;
+      end;
+    end;
+  end;
+  if Changed then
+    Repaint;
+end;
+
+procedure TNecoSprite.Paint;
+var
+  R: TRectF;
+  SS, W, H: Single;
+begin
+  if (FAnim = nil) or (FAnim.Sheet = nil) or not GShown then
+    Exit;
+  W := FAnim.W * FScale;
+  H := FAnim.H * FScale;
+  R := TRectF.Create(0, 0, W, H);
+  R.Offset((Width - W) / 2, Height - H);
+  if Scene <> nil then
+    SS := Scene.GetSceneScale
+  else
+    SS := 1;
+  if SS <= 0 then
+    SS := 1;
+  R.Offset(Round(R.Left * SS) / SS - R.Left, Round(R.Top * SS) / SS - R.Top);
+  Canvas.DrawBitmap(FAnim.Sheet, FAnim.SourceRect(Min(FFrame, FAnim.Frames - 1)), R, AbsoluteOpacity,
+    Abs(FScale * SS - Round(FScale * SS)) < 0.01);
 end;
 
 initialization

@@ -107,6 +107,19 @@ const
   ICO_LIXEIRA =
     'M0 0 M24 24 M3 6 L21 6 M19 6 L19 20 C19 21 18 22 17 22 L7 22 C6 22 5 21 5 20 L5 6 M8 6 L8 ' +
     '4 C8 3 9 2 10 2 L14 2 C15 2 16 3 16 4 L16 6';
+  ICO_AJUSTES =
+    'M0 0 M24 24 M20 7 L11 7 M14 17 L5 17 M14 17 C14 18.657 15.343 20 17 20 C18.657 20 20 18.65' +
+    '7 20 17 C20 15.343 18.657 14 17 14 C15.343 14 14 15.343 14 17 Z M4 7 C4 8.657 5.343 10 7 1' +
+    '0 C8.657 10 10 8.657 10 7 C10 5.343 8.657 4 7 4 C5.343 4 4 5.343 4 7 Z';
+  ICO_OK =
+    'M0 0 M24 24 M20 6 L9 17 L4 12';
+  ICO_ARQUIVO =
+    'M0 0 M24 24 M15 2 L6 2 C4.895 2 4 2.895 4 4 L4 20 C4 21.105 4.895 22 6 22 L18 22 C19.105 2' +
+    '2 20 21.105 20 20 L20 7 Z M14 2 L14 6 C14 7.105 14.895 8 16 8 L20 8';
+  ICO_SINCRONIZAR =
+    'M0 0 M24 24 M3 12 C3 7.029 7.029 3 12 3 C14.516 3.009 16.931 3.991 18.74 5.74 L21 8 M21 3 ' +
+    'L21 8 L16 8 M21 12 C21 16.971 16.971 21 12 21 C9.484 20.991 7.069 20.009 5.26 18.26 L3 16 ' +
+    'M8 16 L3 16 L3 21';
   // Botões da janela, no traço fino do Windows 11 (desenhados com traço 1).
   ICO_JANELA_MINIMIZAR =
     'M0 0 M24 24 M2 12 L22 12';
@@ -171,6 +184,9 @@ function NecoNewLabel(AOwner: TComponent; AParent: TFmxObject; const AText: stri
   ASize: Single = CFontSize; AColor: TAlphaColor = 0): TLabel;
 function NecoNewButton(AOwner: TComponent; AParent: TFmxObject; const AIcon, AHint: string;
   AOnClick: TNotifyEvent): TNecoIconButton;
+/// Ícone solto (decoração: HitTest = False), traço 2 arredondado.
+function NecoNewIcon(AOwner: TComponent; AParent: TFmxObject; const AIcon: string;
+  ASize: Single; AColor: TAlphaColor): TPath;
 
 implementation
 
@@ -224,6 +240,23 @@ begin
   Result.Hint := AHint;
   Result.ShowHint := AHint <> '';
   Result.OnClick := AOnClick;
+end;
+
+function NecoNewIcon(AOwner: TComponent; AParent: TFmxObject; const AIcon: string;
+  ASize: Single; AColor: TAlphaColor): TPath;
+begin
+  Result := TPath.Create(AOwner);
+  Result.Parent := AParent;
+  Result.HitTest := False;
+  Result.Width := ASize;
+  Result.Height := ASize;
+  Result.WrapMode := TPathWrapMode.Fit;
+  Result.Fill.Kind := TBrushKind.None;
+  Result.Stroke.Thickness := 2;
+  Result.Stroke.Cap := TStrokeCap.Round;
+  Result.Stroke.Join := TStrokeJoin.Round;
+  Result.Stroke.Color := AColor;
+  Result.Data.Data := AIcon;
 end;
 
 { TNecoIconButton }

@@ -17,6 +17,9 @@ uses
   Neco.UI.Tab in 'src\ui\Neco.UI.Tab.pas',
   Neco.UI.Frame in 'src\ui\Neco.UI.Frame.pas',
   Neco.UI.Neco in 'src\ui\Neco.UI.Neco.pas',
+  Neco.UI.SidePanel in 'src\ui\Neco.UI.SidePanel.pas',
+  Neco.UI.Downloads in 'src\ui\Neco.UI.Downloads.pas',
+  Neco.UI.Bookmarks in 'src\ui\Neco.UI.Bookmarks.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}

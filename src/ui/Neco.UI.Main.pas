@@ -12,7 +12,8 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
   FMX.Edit,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
-  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco;
+  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
+  Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks;
 
 type
   TFormMain = class(TForm)
@@ -45,12 +46,17 @@ type
     FBtnShield: TNecoIconButton;
     FShieldBadge: TRectangle;
     FShieldBadgeText: TLabel;
+    FBtnBookmarks, FBtnDownloads: TNecoIconButton;
+    FBtnStar: TNecoIconButton;
     FProgressTrack: TLayout;
     FProgress: TRectangle;
     FProgressTimer: TTimer;
     FBody: TLayout;
     FPageArea: TLayout;
     FPageMessage: TLabel;
+    // painéis laterais (um aberto por vez)
+    FPanelDownloads: TNecoDownloadsPanel;
+    FPanelBookmarks: TNecoBookmarksPanel;
 
     procedure BuildUI;
     procedure BuildTabStrip;
@@ -120,6 +126,21 @@ type
     function AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
     procedure UpdateShield;
     procedure ShieldClick(Sender: TObject);
+    // painéis, downloads e favoritos
+    procedure BuildPanels;
+    procedure TogglePanel(APanel: TNecoSidePanel);
+    procedure ShowPanel(APanel: TNecoSidePanel);
+    procedure PanelCloseRequest(Sender: TObject);
+    procedure UpdatePanelButtons;
+    procedure BookmarksClick(Sender: TObject);
+    procedure DownloadsClick(Sender: TObject);
+    procedure DownloadFinished(Sender: TObject; ASuccess: Boolean);
+    procedure UpdateStar;
+    procedure StarClick(Sender: TObject);
+    procedure ToggleBookmark;
+    procedure BookmarksChanged(Sender: TObject);
+    procedure BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
+    procedure BookmarkDelete(Sender: TObject; const AUrl: string);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
   protected
@@ -164,6 +185,8 @@ begin
 end;
 
 procedure TFormMain.FormShow(Sender: TObject);
+var
+  P: string;
 begin
   // A primeira aba precisa do HWND do form, que só existe com a janela criada.
   if FStarted then
@@ -173,6 +196,12 @@ begin
   // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
   AttachFrame;
   NewTab(StartUrl);
+  // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos abre o painel.
+  P := System.SysUtils.GetEnvironmentVariable('NECO_PAINEL');
+  if SameText(P, 'downloads') then
+    ShowPanel(FPanelDownloads)
+  else if SameText(P, 'favoritos') then
+    ShowPanel(FPanelBookmarks);
 end;
 
 function TFormMain.StartUrl: string;
@@ -202,6 +231,8 @@ begin
   NecoFrameDetach;
   FStage.Stop;
   FProgressTimer.Enabled := False;
+  FPanelDownloads.Shutdown;
+  FBookmarks.OnChange := nil;
   SaveData;
   // Ordem: fechar cada motor (a janela do form ainda existe), depois o ambiente.
   for T in FTabs do
@@ -220,7 +251,8 @@ end;
 
 procedure TFormMain.LoadData;
 begin
-  FSettings := TNecoSettings.Create;
+  // NECO_DADOS=<pasta>: perfil separado (testes sem tocar nos dados do usuário).
+  FSettings := TNecoSettings.Create(System.SysUtils.GetEnvironmentVariable('NECO_DADOS'));
   FSettings.Load;
   FBlocklist := TNecoBlocklist.Create;
   FBlocklist.LoadFromFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'blocklist-hosts.txt'));
@@ -305,6 +337,8 @@ begin
   FPageMessage.TextSettings.WordWrap := True;
   FPageMessage.TextSettings.HorzAlign := TTextAlign.Center;
   FPageMessage.Visible := False;
+
+  BuildPanels;
 end;
 
 procedure TFormMain.BuildTabStrip;
@@ -655,6 +689,8 @@ begin
   FShieldBadgeText.TextSettings.HorzAlign := TTextAlign.Center;
   FShieldBadgeText.TextSettings.Font.Style := [TFontStyle.fsBold];
   FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
+  FBtnBookmarks := AddToolButton(ICO_MARCADOR, 'Favoritos (Ctrl+Shift+O)', BookmarksClick);
+  FBtnDownloads := AddToolButton(ICO_BAIXAR, 'Downloads (Ctrl+J)', DownloadsClick);
 
   FAddressBox := TRectangle.Create(Self);
   FAddressBox.Parent := FToolbar;
@@ -690,6 +726,15 @@ begin
   FAddress.OnKeyDown := AddressKeyDown;
   FAddress.OnEnter := AddressEnter;
   FAddress.OnExit := AddressExit;
+
+  FBtnStar := NecoNewButton(Self, FAddressBox, ICO_ESTRELA, 'Favoritar esta página (Ctrl+D)', StarClick);
+  FBtnStar.Align := TAlignLayout.Right;
+  FBtnStar.Width := 28;
+  FBtnStar.Height := 28;
+  FBtnStar.XRadius := 14;
+  FBtnStar.YRadius := 14;
+  FBtnStar.IconSize := 16;
+  FBtnStar.Margins.Rect := TRectF.Create(0, 2, 3, 2);
 end;
 
 procedure TFormMain.ApplyTheme;
@@ -716,6 +761,12 @@ begin
   FBtnForward.Restyle;
   FBtnReload.Restyle;
   UpdateShield;
+  FBtnBookmarks.Restyle;
+  FBtnDownloads.Restyle;
+  UpdatePanelButtons;
+  UpdateStar;
+  FPanelDownloads.Restyle;
+  FPanelBookmarks.Restyle;
 end;
 
 { Abas }
@@ -765,6 +816,7 @@ begin
   UpdateCaption;
   UpdatePageMessage;
   UpdateShield;
+  UpdateStar;
 end;
 
 procedure TFormMain.SwitchTab(ADelta: Integer);
@@ -835,7 +887,10 @@ begin
     tcTitle:
       UpdateCaption;
     tcUrl:
-      UpdateAddress;
+      begin
+        UpdateAddress;
+        UpdateStar;
+      end;
     tcLoading:
       begin
         UpdateProgress;
@@ -881,7 +936,10 @@ end;
 
 procedure TFormMain.TabDownload(Sender: TObject; const ADownload: INecoDownload);
 begin
-  // Painel de downloads: etapa 6.
+  // Vem de dentro do callback do motor: só acrescenta a linha (nada é liberado aqui).
+  FPanelDownloads.Add(ADownload);
+  if not FPanelDownloads.Visible then
+    ShowPanel(FPanelDownloads);
 end;
 
 procedure TFormMain.TabKey(Sender: TObject; AKey: Word; AShift: TShiftState; var AHandled: Boolean);
@@ -1098,6 +1156,156 @@ begin
   FAddress.SelectAll;
 end;
 
+{ Painéis laterais }
+
+procedure TFormMain.BuildPanels;
+begin
+  FPanelDownloads := TNecoDownloadsPanel.Create(Self);
+  FPanelDownloads.Parent := FBody;
+  FPanelDownloads.Visible := False;
+  FPanelDownloads.OnCloseRequest := PanelCloseRequest;
+  FPanelDownloads.OnFinished := DownloadFinished;
+
+  FPanelBookmarks := TNecoBookmarksPanel.Create(Self);
+  FPanelBookmarks.Parent := FBody;
+  FPanelBookmarks.Visible := False;
+  FPanelBookmarks.OnCloseRequest := PanelCloseRequest;
+  FPanelBookmarks.Bookmarks := FBookmarks;
+  FPanelBookmarks.OnOpen := BookmarkOpen;
+  FPanelBookmarks.OnDelete := BookmarkDelete;
+  FPanelBookmarks.Rebuild;
+  FBookmarks.OnChange := BookmarksChanged;
+end;
+
+procedure TFormMain.ShowPanel(APanel: TNecoSidePanel);
+begin
+  // Um painel por vez. Ele encolhe a área da página (OnResized reposiciona o motor).
+  FPanelDownloads.Visible := APanel = FPanelDownloads;
+  FPanelBookmarks.Visible := APanel = FPanelBookmarks;
+  UpdatePanelButtons;
+end;
+
+procedure TFormMain.TogglePanel(APanel: TNecoSidePanel);
+begin
+  if APanel.Visible then
+    ShowPanel(nil)
+  else
+    ShowPanel(APanel);
+end;
+
+procedure TFormMain.PanelCloseRequest(Sender: TObject);
+begin
+  ShowPanel(nil);
+end;
+
+procedure TFormMain.UpdatePanelButtons;
+
+  procedure Mark(AButton: TNecoIconButton; AOn: Boolean);
+  begin
+    if AOn then
+      AButton.BaseColor := Palette.Pressed
+    else
+      AButton.BaseColor := 0;
+  end;
+
+begin
+  Mark(FBtnBookmarks, FPanelBookmarks.Visible);
+  Mark(FBtnDownloads, FPanelDownloads.Visible);
+end;
+
+procedure TFormMain.BookmarksClick(Sender: TObject);
+begin
+  TogglePanel(FPanelBookmarks);
+end;
+
+procedure TFormMain.DownloadsClick(Sender: TObject);
+begin
+  TogglePanel(FPanelDownloads);
+end;
+
+procedure TFormMain.DownloadFinished(Sender: TObject; ASuccess: Boolean);
+begin
+  // Download concluído: a Neco comemora (sem o limite de 1x por minuto).
+  if ASuccess then
+    FStage.Celebrate(True);
+end;
+
+procedure TFormMain.UpdateStar;
+var
+  IsOn: Boolean;
+begin
+  if FBtnStar = nil then
+    Exit;
+  IsOn := (FActive <> nil) and (FActive.Url <> '') and FBookmarks.Contains(FActive.Url);
+  FBtnStar.Filled := IsOn;
+  if IsOn then
+  begin
+    FBtnStar.IconColor := Palette.Star;
+    FBtnStar.Hint := 'Remover dos favoritos (Ctrl+D)';
+  end
+  else
+  begin
+    FBtnStar.IconColor := Palette.TextMuted;
+    FBtnStar.Hint := 'Favoritar esta página (Ctrl+D)';
+  end;
+end;
+
+procedure TFormMain.StarClick(Sender: TObject);
+begin
+  ToggleBookmark;
+end;
+
+procedure TFormMain.ToggleBookmark;
+var
+  U: string;
+begin
+  if FActive = nil then
+    Exit;
+  U := FActive.Url;
+  if (U = '') or SameText(U, 'about:blank') then
+    Exit;
+  // Favoritou: a Neco faz pose.
+  if FBookmarks.Toggle(FActive.DisplayTitle, U) then
+    FStage.Perform('turn');
+end;
+
+procedure TFormMain.BookmarksChanged(Sender: TObject);
+begin
+  // Quem muda a lista nunca é um clique numa linha do painel (BookmarkDelete adia).
+  FPanelBookmarks.Rebuild;
+  UpdateStar;
+  try
+    FBookmarks.SaveToFile(FSettings.BookmarksFile);
+  except
+    // Sem disco agora: o SaveData do fechamento tenta de novo.
+  end;
+end;
+
+procedure TFormMain.BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
+begin
+  if ANewTab or (FActive = nil) then
+    NewTab(AUrl, False)
+  else
+  begin
+    FActive.Navigate(AUrl);
+    FActive.Engine.Focus;
+  end;
+end;
+
+procedure TFormMain.BookmarkDelete(Sender: TObject; const AUrl: string);
+var
+  U: string;
+begin
+  // O clique veio da lixeira de uma linha que o Rebuild vai liberar: depois do clique.
+  U := AUrl;
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not FShuttingDown then
+        FBookmarks.Remove(U);
+    end);
+end;
+
 { Bloqueador }
 
 function TFormMain.AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
@@ -1181,6 +1389,12 @@ begin
         NewTab(FSettings.HomeUrl);
         FocusAddress;
       end
+  else if (M = [ssCtrl]) and (AKey = vkD) then
+    Acao := ToggleBookmark
+  else if (M = [ssCtrl]) and (AKey = vkJ) then
+    Acao := procedure begin TogglePanel(FPanelDownloads); end
+  else if (M = [ssCtrl, ssShift]) and (AKey = vkO) then
+    Acao := procedure begin TogglePanel(FPanelBookmarks); end
   else if (M = [ssCtrl]) and (AKey = vkW) then
     Acao := procedure begin CloseTab(FActive); end
   else if (M = [ssCtrl]) and (AKey = vkTab) then

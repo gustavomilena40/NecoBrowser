@@ -143,9 +143,10 @@ end;
 
 function TNecoTab.DisplayTitle: string;
 begin
-  if FTitle <> '' then
+  // about:blank (aba nova, ou aba cuja navegação virou download) aparece como "Nova aba".
+  if (FTitle <> '') and not SameText(FTitle, 'about:blank') then
     Result := FTitle
-  else if FUrl <> '' then
+  else if (FUrl <> '') and not SameText(FUrl, 'about:blank') then
     Result := FUrl
   else
     Result := 'Nova aba';
