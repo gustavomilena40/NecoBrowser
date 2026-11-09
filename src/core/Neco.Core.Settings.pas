@@ -51,7 +51,7 @@ uses
 
 const
   CAppFolder = 'NecoBrowser';
-  CDefaultHome = 'https://duckduckgo.com/';
+  CDefaultHome = 'https://www.google.com/';
 
 { TNecoSettings }
 
@@ -68,7 +68,7 @@ begin
     FDataDir := TPath.Combine(TPath.GetHomePath, CAppFolder);
     FWebDataDir := TPath.Combine(TPath.GetCachePath, CAppFolder);
   end;
-  FSearchEngine := seDuckDuckGo;
+  FSearchEngine := seGoogle;
   FTheme := ntDark;
   FBlockerEnabled := True;
   FHomeUrl := CDefaultHome;

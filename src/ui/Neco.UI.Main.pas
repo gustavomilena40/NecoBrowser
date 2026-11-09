@@ -48,6 +48,7 @@ type
     procedure LoadData;
     procedure SaveData;
     function BlockerOn: Boolean;
+    function StartUrl: string;
 
     // abas
     function NewTab(const AUrl: string; AActivate: Boolean = True): TNecoTab;
@@ -93,7 +94,7 @@ implementation
 
 uses
   System.IOUtils, System.Math,
-  Neco.Core.Url, Neco.Engine.Factory;
+  Neco.Core.Url, Neco.Core.Trace, Neco.Engine.Factory;
 
 {$R *.fmx}
 
@@ -103,6 +104,7 @@ procedure TFormMain.FormCreate(Sender: TObject);
 var
   Cfg: TNecoEngineConfig;
 begin
+  NecoTrace('form criando');
   FTabs := TObjectList<TNecoTab>.Create(False);
   LoadData;
   NecoSetTheme(FSettings.Theme);
@@ -123,7 +125,23 @@ begin
   if FStarted then
     Exit;
   FStarted := True;
-  NewTab(FSettings.HomeUrl);
+  NecoTrace('form visivel');
+  NewTab(StartUrl);
+end;
+
+function TFormMain.StartUrl: string;
+var
+  I: Integer;
+begin
+  // NecoBrowser.exe <endereço ou busca>: abre isso no lugar da página inicial.
+  for I := 1 to ParamCount do
+    if not ParamStr(I).StartsWith('-') then
+    begin
+      Result := NecoInputToUrl(ParamStr(I), FSettings.SearchEngine);
+      if Result <> '' then
+        Exit;
+    end;
+  Result := FSettings.HomeUrl;
 end;
 
 procedure TFormMain.FormClose(Sender: TObject; var Action: TCloseAction);

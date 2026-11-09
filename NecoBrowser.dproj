@@ -86,6 +86,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="src\core\Neco.Core.Trace.pas"/>
         <DCCReference Include="src\core\Neco.Core.Url.pas"/>
         <DCCReference Include="src\core\Neco.Core.Files.pas"/>
         <DCCReference Include="src\core\Neco.Core.Blocklist.pas"/>

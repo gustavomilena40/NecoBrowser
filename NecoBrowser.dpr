@@ -3,6 +3,7 @@
 uses
   System.StartUpCopy,
   FMX.Forms,
+  Neco.Core.Trace in 'src\core\Neco.Core.Trace.pas',
   Neco.Core.Url in 'src\core\Neco.Core.Url.pas',
   Neco.Core.Files in 'src\core\Neco.Core.Files.pas',
   Neco.Core.Blocklist in 'src\core\Neco.Core.Blocklist.pas',

@@ -44,7 +44,8 @@ implementation
 {$IFDEF MSWINDOWS}
 uses
   System.SysUtils, System.Classes, System.Types, System.Generics.Collections,
-  Winapi.Messages, Winapi.ActiveX, Winapi.CommCtrl, Winapi.WebView2, Winapi.EdgeUtils;
+  Winapi.Messages, Winapi.ActiveX, Winapi.CommCtrl, Winapi.WebView2, Winapi.EdgeUtils,
+  Neco.Core.Trace;
 
 type
   TNecoWV2Engine = class;
@@ -121,6 +122,10 @@ type
     FLoading: Boolean;
     /// URL da navegação principal em curso: o bloqueador nunca barra este documento.
     FMainNavUrl: string;
+    // diagnóstico (NECO_TRACE)
+    FNavStartMs: Double;
+    FResCount: Integer;
+    FResMs: Double;
     procedure StartController;
     procedure ControllerCreated(AError: HResult; const AController: ICoreWebView2Controller);
     procedure ApplyProfile;
@@ -276,6 +281,7 @@ begin
     Opts.Set_Language(PChar(GOptions.Language));
   if GOptions.UserDataFolder <> '' then
     ForceDirectories(GOptions.UserDataFolder);
+  NecoTrace('ambiente pedido');
   HR := CreateCoreWebView2EnvironmentWithOptions(nil, PChar(GOptions.UserDataFolder), Opts,
     TNecoWV2EnvHandler.Create);
   if Failed(HR) then
@@ -302,6 +308,7 @@ begin
     begin
       GEnv := AEnv;
       GEnvState := esReady;
+      NecoTrace('ambiente pronto');
     end
     else
     begin
@@ -381,6 +388,10 @@ begin
     if Succeeded(args.Get_uri(P)) then
       Url := TakeStr(P);
     E.FMainNavUrl := Url;
+    E.FNavStartMs := NecoTraceMs;
+    E.FResCount := 0;
+    E.FResMs := 0;
+    NecoTrace('nav inicio ' + Url);
     E.FLoading := True;
     Cancel := False;
     if Assigned(E.FOnNavigationStarting) then
@@ -410,6 +421,9 @@ begin
     E.FLoading := False;
     if Failed(args.Get_IsSuccess(Ok)) then
       Ok := 0;
+    if NecoTraceOn then
+      NecoTrace(Format('nav fim ok=%d duracao=%.0fms requisicoes_filtradas=%d tempo_no_filtro=%.1fms',
+        [Ok, NecoTraceMs - E.FNavStartMs, E.FResCount, E.FResMs]));
     if Assigned(E.FOnNavigationCompleted) then
       E.FOnNavigationCompleted(E, Ok <> 0);
   except
@@ -506,22 +520,29 @@ var
   Ctx: COREWEBVIEW2_WEB_RESOURCE_CONTEXT;
   P: PWideChar;
   Url: string;
+  T0: Double;
 begin
   Result := S_OK;
   E := FEngine;
   if (E = nil) or not Assigned(E.FRequestFilter) or (GEnv = nil) then
     Exit;
   Keep := E;
+  T0 := NecoTraceMs;
   try
-    if Failed(args.Get_Request(Req)) or (Req = nil) or Failed(Req.Get_uri(P)) then
-      Exit;
-    Url := TakeStr(P);
-    if Succeeded(args.Get_ResourceContext(Ctx)) and (Ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) and
-      (Url = E.FMainNavUrl) then
-      Exit; // a página principal que o usuário abriu nunca é bloqueada
-    if E.FRequestFilter(Url) then
-      if Succeeded(GEnv.CreateWebResourceResponse(nil, 403, 'Blocked', '', Resp)) then
-        args.Set_Response(Resp);
+    try
+      if Failed(args.Get_Request(Req)) or (Req = nil) or Failed(Req.Get_uri(P)) then
+        Exit;
+      Url := TakeStr(P);
+      if Succeeded(args.Get_ResourceContext(Ctx)) and (Ctx = COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT) and
+        (Url = E.FMainNavUrl) then
+        Exit; // a página principal que o usuário abriu nunca é bloqueada
+      if E.FRequestFilter(Url) then
+        if Succeeded(GEnv.CreateWebResourceResponse(nil, 403, 'Blocked', '', Resp)) then
+          args.Set_Response(Resp);
+    finally
+      Inc(E.FResCount);
+      E.FResMs := E.FResMs + (NecoTraceMs - T0);
+    end;
   except
   end;
 end;
@@ -666,6 +687,7 @@ var
 begin
   if FClosed or (GEnv = nil) then
     Exit;
+  NecoTrace('controller pedido');
   HR := GEnv.CreateCoreWebView2Controller(FParentWnd, FSink);
   if Failed(HR) then
     FailLater('Falha ao criar a página (' + HrText(HR) + ').');
@@ -690,6 +712,7 @@ begin
     Fail('Falha ao criar a página (' + HrText(AError) + ').');
     Exit;
   end;
+  NecoTrace('controller pronto');
   FController := AController;
   if Failed(FController.Get_CoreWebView2(FWebView)) or (FWebView = nil) then
   begin

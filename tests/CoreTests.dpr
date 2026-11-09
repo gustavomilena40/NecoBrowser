@@ -182,13 +182,16 @@ begin
   S := TNecoSettings.Create(APasta);
   S2 := TNecoSettings.Create(APasta);
   try
-    Check((S.SearchEngine = seDuckDuckGo) and (S.Theme = ntDark) and S.BlockerEnabled, 'padroes');
-    S.SearchEngine := seGoogle;
+    Check((S.SearchEngine = seGoogle) and (S.Theme = ntDark) and S.BlockerEnabled and
+      (S.HomeUrl = 'https://www.google.com/'), 'padroes (Google)');
+    Check(NecoSearchEngineFromId('') = seGoogle, 'motor ausente no JSON vira Google');
+    Check(NecoSearchEngineFromId('duckduckgo') = seDuckDuckGo, 'duckduckgo continua aceito');
+    S.SearchEngine := seDuckDuckGo;
     S.Theme := ntLight;
     S.BlockerEnabled := False;
     S.Save;
     S2.Load;
-    Check((S2.SearchEngine = seGoogle) and (S2.Theme = ntLight) and not S2.BlockerEnabled, 'ida e volta');
+    Check((S2.SearchEngine = seDuckDuckGo) and (S2.Theme = ntLight) and not S2.BlockerEnabled, 'ida e volta');
   finally
     S.Free;
     S2.Free;

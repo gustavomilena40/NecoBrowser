@@ -235,10 +235,11 @@ end;
 
 function NecoSearchEngineFromId(const AId: string): TNecoSearchEngine;
 begin
-  if SameText(AId, 'google') then
-    Result := seGoogle
+  // Padrão (valor ausente ou desconhecido): Google.
+  if SameText(AId, 'duckduckgo') then
+    Result := seDuckDuckGo
   else
-    Result := seDuckDuckGo;
+    Result := seGoogle;
 end;
 
 end.
