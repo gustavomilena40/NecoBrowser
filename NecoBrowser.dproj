@@ -86,6 +86,17 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="src\core\Neco.Core.Url.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Files.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Blocklist.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Bookmarks.pas"/>
+        <DCCReference Include="src\core\Neco.Core.History.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Settings.pas"/>
+        <DCCReference Include="src\engine\Neco.Engine.Intf.pas"/>
+        <DCCReference Include="src\engine\Neco.Engine.WebView2.pas"/>
+        <DCCReference Include="src\engine\Neco.Engine.Factory.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Theme.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Tab.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>

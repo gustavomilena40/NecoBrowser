@@ -3,6 +3,17 @@
 uses
   System.StartUpCopy,
   FMX.Forms,
+  Neco.Core.Url in 'src\core\Neco.Core.Url.pas',
+  Neco.Core.Files in 'src\core\Neco.Core.Files.pas',
+  Neco.Core.Blocklist in 'src\core\Neco.Core.Blocklist.pas',
+  Neco.Core.Bookmarks in 'src\core\Neco.Core.Bookmarks.pas',
+  Neco.Core.History in 'src\core\Neco.Core.History.pas',
+  Neco.Core.Settings in 'src\core\Neco.Core.Settings.pas',
+  Neco.Engine.Intf in 'src\engine\Neco.Engine.Intf.pas',
+  Neco.Engine.WebView2 in 'src\engine\Neco.Engine.WebView2.pas',
+  Neco.Engine.Factory in 'src\engine\Neco.Engine.Factory.pas',
+  Neco.UI.Theme in 'src\ui\Neco.UI.Theme.pas',
+  Neco.UI.Tab in 'src\ui\Neco.UI.Tab.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}
