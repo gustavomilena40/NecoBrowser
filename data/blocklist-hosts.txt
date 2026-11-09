@@ -1,0 +1,1 @@
+# NecoBrowser - lista de bloqueio (formato hosts). Substituida na etapa 5.
