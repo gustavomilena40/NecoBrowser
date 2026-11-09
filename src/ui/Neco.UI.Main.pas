@@ -13,7 +13,8 @@ uses
   FMX.Edit,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
   Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
-  Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView;
+  Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
+  Neco.UI.BookmarkBar;
 
 type
   TFormMain = class(TForm)
@@ -55,6 +56,7 @@ type
     FShieldBadgeText: TLabel;
     FBtnBookmarks, FBtnDownloads, FBtnTheme, FBtnSettings: TNecoIconButton;
     FBtnStar: TNecoIconButton;
+    FBookmarkBar: TNecoBookmarkBar;
     FProgressTrack: TLayout;
     FProgress: TRectangle;
     FProgressTimer: TTimer;
@@ -154,6 +156,9 @@ type
     procedure BookmarksChanged(Sender: TObject);
     procedure BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
     procedure BookmarkDelete(Sender: TObject; const AUrl: string);
+    procedure BookmarkRename(Sender: TObject; const AUrl, ATitle: string);
+    procedure BookmarkEditRequest(Sender: TObject; const AUrl: string);
+    procedure SetBookmarkBarShown(AShow: Boolean);
     // tema, configurações e página de erro
     procedure ThemeClick(Sender: TObject);
     procedure SettingsClick(Sender: TObject);
@@ -372,6 +377,17 @@ begin
   FToolbar.Stroke.Kind := TBrushKind.None;
   FToolbar.Position.Y := 100;
   BuildToolbar;
+
+  FBookmarkBar := TNecoBookmarkBar.Create(Self);
+  FBookmarkBar.Parent := Self;
+  FBookmarkBar.Position.Y := 500;
+  FBookmarkBar.Align := TAlignLayout.Top;
+  FBookmarkBar.Bookmarks := FBookmarks;
+  FBookmarkBar.OnOpen := BookmarkOpen;
+  FBookmarkBar.OnEdit := BookmarkEditRequest;
+  FBookmarkBar.OnMore := BookmarksClick;
+  FBookmarkBar.Visible := FSettings.ShowBookmarkBar;
+  FBookmarkBar.Rebuild;
 
   FProgressTrack := TLayout.Create(Self);
   FProgressTrack.Parent := Self;
@@ -913,6 +929,8 @@ begin
   FPanelDownloads.Restyle;
   FPanelBookmarks.Restyle;
   FPanelSettings.Restyle;
+  FBookmarkBar.Restyle;
+  FBookmarkBar.Rebuild; // as estrelas pegam a cor na montagem
 end;
 
 { Abas }
@@ -1338,6 +1356,7 @@ begin
   FPanelBookmarks.Bookmarks := FBookmarks;
   FPanelBookmarks.OnOpen := BookmarkOpen;
   FPanelBookmarks.OnDelete := BookmarkDelete;
+  FPanelBookmarks.OnRename := BookmarkRename;
   FPanelBookmarks.Rebuild;
   FBookmarks.OnChange := BookmarksChanged;
 
@@ -1446,6 +1465,7 @@ procedure TFormMain.BookmarksChanged(Sender: TObject);
 begin
   // Quem muda a lista nunca é um clique numa linha do painel (BookmarkDelete adia).
   FPanelBookmarks.Rebuild;
+  FBookmarkBar.Rebuild;
   UpdateStar;
   try
     FBookmarks.SaveToFile(FSettings.BookmarksFile);
@@ -1463,6 +1483,45 @@ begin
     FActive.Navigate(AUrl);
     FActive.Engine.Focus;
   end;
+end;
+
+procedure TFormMain.BookmarkRename(Sender: TObject; const AUrl, ATitle: string);
+var
+  U, T: string;
+begin
+  // Vem do campo de edição, que o Rebuild vai liberar: depois do evento.
+  U := AUrl;
+  T := ATitle;
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not FShuttingDown then
+        FBookmarks.Rename(U, T);
+    end);
+end;
+
+procedure TFormMain.BookmarkEditRequest(Sender: TObject; const AUrl: string);
+begin
+  // Botão direito numa pílula da barra: edita o nome no painel.
+  ShowPanel(FPanelBookmarks);
+  FPanelBookmarks.BeginEdit(AUrl);
+end;
+
+procedure TFormMain.SetBookmarkBarShown(AShow: Boolean);
+begin
+  FSettings.ShowBookmarkBar := AShow;
+  // Align=Top: quem volta a ficar visível vai para o fim da pilha. Repõe a ordem.
+  BeginUpdate;
+  try
+    FBookmarkBar.Visible := AShow;
+    FBookmarkBar.Position.Y := FToolbar.Position.Y + FToolbar.Height;
+    FProgressTrack.Position.Y := FBookmarkBar.Position.Y + FBookmarkBar.Height + 1;
+  finally
+    EndUpdate;
+  end;
+  Realign;
+  FPanelSettings.Refresh;
+  SaveSettings;
 end;
 
 procedure TFormMain.BookmarkDelete(Sender: TObject; const AUrl: string);
@@ -1533,6 +1592,11 @@ begin
         UpdateShield;
         if (FActive <> nil) and (FActive.Url <> '') then
           FActive.Engine.Reload;
+      end;
+    scBookmarkBar:
+      begin
+        SetBookmarkBarShown(FSettings.ShowBookmarkBar);
+        Exit; // já gravou
       end;
     scAutofill:
       for T in FTabs do
@@ -1695,6 +1759,8 @@ begin
     Acao := ToggleBookmark
   else if (M = [ssCtrl]) and (AKey = vkJ) then
     Acao := procedure begin TogglePanel(FPanelDownloads); end
+  else if (M = [ssCtrl, ssShift]) and (AKey = vkB) then
+    Acao := procedure begin SetBookmarkBarShown(not FSettings.ShowBookmarkBar); end
   else if (M = [ssCtrl, ssShift]) and (AKey = vkO) then
     Acao := procedure begin TogglePanel(FPanelBookmarks); end
   else if (M = [ssCtrl]) and (AKey = vkW) then

@@ -22,6 +22,7 @@ uses
   Neco.UI.Bookmarks in 'src\ui\Neco.UI.Bookmarks.pas',
   Neco.UI.Settings in 'src\ui\Neco.UI.Settings.pas',
   Neco.UI.ErrorView in 'src\ui\Neco.UI.ErrorView.pas',
+  Neco.UI.BookmarkBar in 'src\ui\Neco.UI.BookmarkBar.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}

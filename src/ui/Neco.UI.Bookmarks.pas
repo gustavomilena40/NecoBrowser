@@ -8,19 +8,30 @@ interface
 
 uses
   System.SysUtils, System.Classes, System.Types, System.UITypes,
-  FMX.Types, FMX.Controls, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
+  FMX.Types, FMX.Controls, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls, FMX.Edit,
   Neco.Core.Bookmarks, Neco.UI.Theme, Neco.UI.SidePanel;
 
 type
   /// ANewTab: abrir em aba nova (botão do meio).
   TNecoOpenUrlEvent = procedure(Sender: TObject; const AUrl: string; ANewTab: Boolean) of object;
   TNecoUrlNotify = procedure(Sender: TObject; const AUrl: string) of object;
+  TNecoRenameEvent = procedure(Sender: TObject; const AUrl, ATitle: string) of object;
 
   TNecoBookmarksPanel = class(TNecoSidePanel)
   private
     FBookmarks: TNecoBookmarks;
     FOnOpen: TNecoOpenUrlEvent;
     FOnDelete: TNecoUrlNotify;
+    FOnRename: TNecoRenameEvent;
+    // edição do nome (um campo por vez)
+    FEdit: TEdit;
+    FEditLabel: TLabel;
+    FEditUrl: string;
+    FEditDone: Boolean;
+    procedure EditClick(Sender: TObject);
+    procedure EditKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
+    procedure EditExit(Sender: TObject);
+    procedure FinishEdit(ACommit: Boolean);
     procedure RowClick(Sender: TObject);
     procedure RowMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure RowHover(Sender: TObject);
@@ -33,8 +44,12 @@ type
     /// Refaz as linhas a partir da lista. Não chamar de dentro de um clique numa linha.
     procedure Rebuild;
     procedure Restyle; override;
+    /// Troca o título da linha por um campo de texto (Enter salva, Esc cancela).
+    procedure BeginEdit(const AUrl: string);
     property OnOpen: TNecoOpenUrlEvent read FOnOpen write FOnOpen;
     property OnDelete: TNecoUrlNotify read FOnDelete write FOnDelete;
+    /// Nome novo confirmado. O form adia a mudança na lista (Rebuild libera o campo).
+    property OnRename: TNecoRenameEvent read FOnRename write FOnRename;
   end;
 
 implementation
@@ -56,8 +71,12 @@ var
   Mid: TLayout;
   T, U: TLabel;
   Ico: TPath;
-  Del: TNecoIconButton;
+  Del, Ed: TNecoIconButton;
 begin
+  // Um campo em edição morre junto com a linha: sem avisos dele daqui para frente.
+  FEditDone := True;
+  FEdit := nil;
+  FEditLabel := nil;
   List.BeginUpdate;
   try
     ClearRows;
@@ -98,6 +117,15 @@ begin
       Del.Margins.Rect := TRectF.Create(0, 11, 6, 11);
       Del.TagString := B.Url;
 
+      Ed := NecoNewButton(Self, R, ICO_LAPIS, 'Editar o nome', EditClick);
+      Ed.Align := TAlignLayout.Right;
+      Ed.Width := 30;
+      Ed.Height := 30;
+      Ed.IconSize := 14;
+      Ed.IconColor := Palette.TextMuted;
+      Ed.Margins.Rect := TRectF.Create(0, 11, 0, 11);
+      Ed.TagString := B.Url;
+
       Mid := TLayout.Create(Self);
       Mid.Parent := R;
       Mid.Align := TAlignLayout.Client;
@@ -109,6 +137,7 @@ begin
       T.Align := TAlignLayout.Top;
       T.Height := 19;
       T.Position.Y := 0;
+      R.TagObject := T; // o título, para a edição achar
       U := NecoNewLabel(Self, Mid, B.Url, 11, Palette.TextMuted);
       U.Align := TAlignLayout.Top;
       U.Height := 16;
@@ -152,6 +181,85 @@ procedure TNecoBookmarksPanel.DeleteClick(Sender: TObject);
 begin
   if Assigned(FOnDelete) then
     FOnDelete(Self, TFmxObject(Sender).TagString);
+end;
+
+procedure TNecoBookmarksPanel.EditClick(Sender: TObject);
+begin
+  BeginEdit(TFmxObject(Sender).TagString);
+end;
+
+procedure TNecoBookmarksPanel.BeginEdit(const AUrl: string);
+var
+  I: Integer;
+  R: TControl;
+begin
+  if FEdit <> nil then
+    FinishEdit(True);
+  for I := 0 to RowCount - 1 do
+  begin
+    R := Row(I);
+    if (R.TagString <> AUrl) or not (R.TagObject is TLabel) then
+      Continue;
+    FEditLabel := TLabel(R.TagObject);
+    FEditUrl := AUrl;
+    FEditDone := False;
+    FEdit := TEdit.Create(Self);
+    FEdit.Parent := FEditLabel.Parent;
+    FEdit.Position.Y := -10; // antes do título na pilha
+    FEdit.Align := TAlignLayout.Top;
+    FEdit.Height := 22;
+    FEdit.StyledSettings := [];
+    FEdit.TextSettings.Font.Size := 13;
+    FEdit.TextSettings.FontColor := Palette.Text;
+    FEdit.Text := FEditLabel.Text;
+    FEdit.KillFocusByReturn := False;
+    FEdit.OnKeyDown := EditKeyDown;
+    FEdit.OnExit := EditExit;
+    FEditLabel.Visible := False;
+    FEdit.SetFocus;
+    FEdit.SelectAll;
+    Exit;
+  end;
+end;
+
+procedure TNecoBookmarksPanel.FinishEdit(ACommit: Boolean);
+var
+  T: string;
+begin
+  if FEditDone or (FEdit = nil) then
+    Exit;
+  FEditDone := True;
+  T := Trim(FEdit.Text);
+  // Esconde (não libera: pode estar dentro de um evento do próprio campo). O próximo
+  // Rebuild leva o campo junto com a linha.
+  FEdit.Visible := False;
+  FEditLabel.Visible := True;
+  if ACommit and (T <> '') and (T <> FEditLabel.Text) then
+  begin
+    FEditLabel.Text := T;
+    if Assigned(FOnRename) then
+      FOnRename(Self, FEditUrl, T);
+  end;
+end;
+
+procedure TNecoBookmarksPanel.EditKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar;
+  Shift: TShiftState);
+begin
+  if Key = vkReturn then
+  begin
+    Key := 0;
+    FinishEdit(True);
+  end
+  else if Key = vkEscape then
+  begin
+    Key := 0;
+    FinishEdit(False);
+  end;
+end;
+
+procedure TNecoBookmarksPanel.EditExit(Sender: TObject);
+begin
+  FinishEdit(True);
 end;
 
 procedure TNecoBookmarksPanel.Restyle;

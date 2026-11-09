@@ -22,12 +22,15 @@ type
     FNecoShown: Boolean;
     FFormAutofill: Boolean;
     FSavePasswords: Boolean;
+    FShowBookmarkBar: Boolean;
+    FRestoreSession: Boolean;
     FHomeUrl: string;
     FCustomDir: Boolean;
     function GetSettingsFile: string;
     function GetBookmarksFile: string;
     function GetHistoryFile: string;
     function GetDownloadsDir: string;
+    function GetSessionFile: string;
   public
     /// ADataDir vazio usa o padrão da plataforma. Os testes passam uma pasta temporária
     /// (e aí os downloads também vão para dentro dela).
@@ -52,6 +55,15 @@ type
     property FormAutofill: Boolean read FFormAutofill write FFormAutofill;
     /// O motor oferece salvar senhas (guardadas cifradas no perfil do motor).
     property SavePasswords: Boolean read FSavePasswords write FSavePasswords;
+    /// Barra de favoritos abaixo da barra de endereço (Ctrl+Shift+B).
+    property ShowBookmarkBar: Boolean read FShowBookmarkBar write FShowBookmarkBar;
+    /// Ao abrir, reabre as abas que estavam abertas ao fechar.
+    property RestoreSession: Boolean read FRestoreSession write FRestoreSession;
+    property SessionFile: string read GetSessionFile;
+    /// Grava as abas abertas (URLs na ordem da faixa) e qual estava ativa.
+    procedure SaveSession(const AUrls: TArray<string>; AActive: Integer);
+    /// Lê a sessão gravada. False = não há (ou o arquivo é inválido).
+    function LoadSession(out AUrls: TArray<string>; out AActive: Integer): Boolean;
     property HomeUrl: string read FHomeUrl write FHomeUrl;
   end;
 
@@ -86,6 +98,8 @@ begin
   FNecoShown := True;
   FFormAutofill := True;
   FSavePasswords := True;
+  FShowBookmarkBar := True;
+  FRestoreSession := True;
   FHomeUrl := CDefaultHome;
 end;
 
@@ -114,6 +128,57 @@ begin
     Result := TPath.Combine(FDataDir, 'Downloads');
 end;
 
+function TNecoSettings.GetSessionFile: string;
+begin
+  Result := TPath.Combine(FDataDir, 'session.json');
+end;
+
+procedure TNecoSettings.SaveSession(const AUrls: TArray<string>; AActive: Integer);
+var
+  O: TJSONObject;
+  A: TJSONArray;
+  U: string;
+begin
+  O := TJSONObject.Create;
+  try
+    O.AddPair('version', TJSONNumber.Create(1));
+    A := TJSONArray.Create;
+    O.AddPair('tabs', A);
+    for U in AUrls do
+      A.Add(U);
+    O.AddPair('active', TJSONNumber.Create(AActive));
+    NecoSaveTextAtomic(SessionFile, O.Format(2));
+  finally
+    O.Free;
+  end;
+end;
+
+function TNecoSettings.LoadSession(out AUrls: TArray<string>; out AActive: Integer): Boolean;
+var
+  O: TJSONObject;
+  A: TJSONArray;
+  V: TJSONValue;
+begin
+  AUrls := nil;
+  AActive := 0;
+  O := NecoParseObject(NecoLoadText(SessionFile));
+  if O = nil then
+    Exit(False);
+  try
+    if O.TryGetValue<TJSONArray>('tabs', A) then
+      for V in A do
+        if (V is TJSONString) and (V.Value <> '') then
+          AUrls := AUrls + [V.Value];
+    if not O.TryGetValue<Integer>('active', AActive) then
+      AActive := 0;
+    if (AActive < 0) or (AActive >= Length(AUrls)) then
+      AActive := 0;
+  finally
+    O.Free;
+  end;
+  Result := Length(AUrls) > 0;
+end;
+
 function TNecoSettings.ToJson: string;
 var
   O: TJSONObject;
@@ -130,6 +195,8 @@ begin
     O.AddPair('neco', TJSONBool.Create(FNecoShown));
     O.AddPair('formAutofill', TJSONBool.Create(FFormAutofill));
     O.AddPair('savePasswords', TJSONBool.Create(FSavePasswords));
+    O.AddPair('bookmarkBar', TJSONBool.Create(FShowBookmarkBar));
+    O.AddPair('restoreSession', TJSONBool.Create(FRestoreSession));
     O.AddPair('home', FHomeUrl);
     Result := O.Format(2);
   finally
@@ -154,6 +221,8 @@ begin
     FNecoShown := NecoJsonBool(O, 'neco', True);
     FFormAutofill := NecoJsonBool(O, 'formAutofill', True);
     FSavePasswords := NecoJsonBool(O, 'savePasswords', True);
+    FShowBookmarkBar := NecoJsonBool(O, 'bookmarkBar', True);
+    FRestoreSession := NecoJsonBool(O, 'restoreSession', True);
     FHomeUrl := NecoJsonStr(O, 'home', CDefaultHome);
     if FHomeUrl = '' then
       FHomeUrl := CDefaultHome;

@@ -14,7 +14,7 @@ uses
   Neco.Core.Url, Neco.Core.Settings, Neco.UI.Theme, Neco.UI.Neco, Neco.UI.SidePanel;
 
 type
-  TNecoSettingsChange = (scSearch, scTheme, scBlocker, scAutofill, scNeco);
+  TNecoSettingsChange = (scSearch, scTheme, scBookmarkBar, scSession, scBlocker, scAutofill, scNeco);
   TNecoSettingsChangeEvent = procedure(Sender: TObject; AChange: TNecoSettingsChange) of object;
 
   /// Uma linha clicável: opção de escolha única (bolinha) ou chave liga/desliga.
@@ -42,6 +42,8 @@ type
     FSearch: array[TNecoSearchEngine] of TNecoOptionRow;
     FTheme: array[TNecoTheme] of TNecoOptionRow;
     FBlocker: TNecoOptionRow;
+    FBar: TNecoOptionRow;
+    FSession: TNecoOptionRow;
     FForms: TNecoOptionRow;
     FPasswords: TNecoOptionRow;
     FNeco: TNecoOptionRow;
@@ -217,6 +219,10 @@ begin
   Section('Aparência');
   for T := Low(TNecoTheme) to High(TNecoTheme) do
     FTheme[T] := Option(False, CThemeTitle[T], '');
+  FBar := Option(True, 'Mostrar a barra de favoritos', 'logo abaixo do endereço (Ctrl+Shift+B)');
+
+  Section('Ao abrir');
+  FSession := Option(True, 'Reabrir as abas da última vez', 'senão, abre a página inicial');
 
   Section('Bloqueador');
   FBlocker := Option(True, 'Bloquear anúncios e rastreadores',
@@ -287,6 +293,16 @@ begin
     FSettings.BlockerEnabled := not FSettings.BlockerEnabled;
     DoChanged(scBlocker);
   end;
+  if Sender = FBar then
+  begin
+    FSettings.ShowBookmarkBar := not FSettings.ShowBookmarkBar;
+    DoChanged(scBookmarkBar);
+  end;
+  if Sender = FSession then
+  begin
+    FSettings.RestoreSession := not FSettings.RestoreSession;
+    DoChanged(scSession);
+  end;
   if Sender = FForms then
   begin
     FSettings.FormAutofill := not FSettings.FormAutofill;
@@ -323,6 +339,8 @@ begin
   for T := Low(TNecoTheme) to High(TNecoTheme) do
     FTheme[T].Checked := FSettings.Theme = T;
   FBlocker.Checked := FSettings.BlockerEnabled;
+  FBar.Checked := FSettings.ShowBookmarkBar;
+  FSession.Checked := FSettings.RestoreSession;
   FForms.Checked := FSettings.FormAutofill;
   FPasswords.Checked := FSettings.SavePasswords;
   FNeco.Checked := FSettings.NecoShown;

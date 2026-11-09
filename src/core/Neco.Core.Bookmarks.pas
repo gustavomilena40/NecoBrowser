@@ -30,6 +30,8 @@ type
     /// Acrescenta no fim. Se a URL já existe, só atualiza o título. Devolve o índice.
     function Add(const ATitle, AUrl: string): Integer;
     procedure Remove(const AUrl: string);
+    /// Troca o nome do favorito. Nome vazio é ignorado. Devolve False se a URL não existe.
+    function Rename(const AUrl, ATitle: string): Boolean;
     procedure Delete(AIndex: Integer);
     /// Liga ou desliga o favorito da URL. Devolve True se ficou favoritado.
     function Toggle(const ATitle, AUrl: string): Boolean;
@@ -122,6 +124,23 @@ begin
   I := IndexOfUrl(AUrl);
   if I >= 0 then
     Delete(I);
+end;
+
+function TNecoBookmarks.Rename(const AUrl, ATitle: string): Boolean;
+var
+  I: Integer;
+  B: TNecoBookmark;
+  T: string;
+begin
+  I := IndexOfUrl(AUrl);
+  T := Trim(ATitle);
+  Result := I >= 0;
+  if not Result or (T = '') or (FItems[I].Title = T) then
+    Exit;
+  B := FItems[I];
+  B.Title := T;
+  FItems[I] := B;
+  Changed;
 end;
 
 procedure TNecoBookmarks.Delete(AIndex: Integer);

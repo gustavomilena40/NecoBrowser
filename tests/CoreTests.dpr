@@ -128,6 +128,10 @@ begin
     CheckEq(A[0].Title, 'Exemplo novo', 'repetida atualiza o titulo');
     Check(A.Toggle('X', 'https://x.com/') and A.Contains('https://x.com/'), 'toggle liga');
     Check(not A.Toggle('X', 'https://x.com/') and not A.Contains('https://x.com/'), 'toggle desliga');
+    Check(A.Rename('https://example.com/', '  Meu exemplo ') and (A[0].Title = 'Meu exemplo'), 'renomear');
+    Check(A.Rename('https://example.com/', '') and (A[0].Title = 'Meu exemplo'), 'nome vazio e ignorado');
+    Check(not A.Rename('https://nao.existe/', 'X'), 'renomear URL inexistente');
+    A.Rename('https://example.com/', 'Exemplo novo');
 
     A.SaveToFile(Arq);
     Check(TFile.Exists(Arq) and not TFile.Exists(Arq + '.tmp'), 'gravacao atomica sem sobra');
@@ -178,6 +182,8 @@ end;
 
 procedure TestarSettings(const APasta: string);
 var
+  SU: TArray<string>;
+  SA: Integer;
   S, S2: TNecoSettings;
 begin
   Writeln('Configuracoes');
@@ -192,15 +198,24 @@ begin
       'id do DuckDuckGo HTML vai e volta');
     Check(S.NecoShown, 'Neco ligada por padrao');
     Check(S.FormAutofill and S.SavePasswords, 'formularios e senhas ligados por padrao');
+    Check(S.ShowBookmarkBar and S.RestoreSession, 'barra de favoritos e sessao ligadas por padrao');
+    Check(not S.LoadSession(SU, SA), 'sem sessao gravada');
+    S.SaveSession(['https://a.com/', 'https://b.com/', 'https://c.com/'], 2);
+    Check(S2.LoadSession(SU, SA) and (Length(SU) = 3) and (SU[1] = 'https://b.com/') and (SA = 2),
+      'sessao: ida e volta');
+    S.SaveSession(['https://a.com/'], 7);
+    Check(S2.LoadSession(SU, SA) and (SA = 0), 'sessao: ativa fora da faixa vira 0');
     S.SearchEngine := seDuckDuckGo;
     S.Theme := ntLight;
     S.BlockerEnabled := False;
     S.NecoShown := False;
     S.SavePasswords := False;
+    S.ShowBookmarkBar := False;
     S.Save;
     S2.Load;
     Check((S2.SearchEngine = seDuckDuckGo) and (S2.Theme = ntLight) and not S2.BlockerEnabled and
-      not S2.NecoShown and S2.FormAutofill and not S2.SavePasswords, 'ida e volta');
+      not S2.NecoShown and S2.FormAutofill and not S2.SavePasswords and
+      not S2.ShowBookmarkBar and S2.RestoreSession, 'ida e volta');
   finally
     S.Free;
     S2.Free;
