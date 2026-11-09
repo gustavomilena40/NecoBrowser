@@ -8,7 +8,7 @@
 interface
 
 uses
-  System.Generics.Collections;
+  System.Classes, System.Generics.Collections;
 
 type
   TNecoBlocklist = class
@@ -26,6 +26,8 @@ type
     procedure AddLine(const ALine: string);
     /// Devolve quantos hosts a lista tem depois da carga. Arquivo inexistente: 0.
     function LoadFromFile(const AFileName: string): Integer;
+    /// Mesma coisa a partir de um stream em UTF-8 (ex.: a lista embutida no exe).
+    function LoadFromStream(AStream: TStream): Integer;
     /// True se o host ou algum domínio-pai dele (sem chegar ao TLD) está na lista.
     function IsBlocked(const AHost: string): Boolean;
     function IsUrlBlocked(const AUrl: string): Boolean;
@@ -35,7 +37,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.Classes, System.IOUtils, Neco.Core.Url;
+  System.SysUtils, System.IOUtils, Neco.Core.Url;
 
 { TNecoBlocklist }
 
@@ -115,18 +117,31 @@ end;
 
 function TNecoBlocklist.LoadFromFile(const AFileName: string): Integer;
 var
+  F: TFileStream;
+begin
+  FHosts.Clear;
+  Result := 0;
+  if not TFile.Exists(AFileName) then
+    Exit;
+  F := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
+  try
+    Result := LoadFromStream(F);
+  finally
+    F.Free;
+  end;
+end;
+
+function TNecoBlocklist.LoadFromStream(AStream: TStream): Integer;
+var
   Reader: TStreamReader;
 begin
   FHosts.Clear;
-  if TFile.Exists(AFileName) then
-  begin
-    Reader := TStreamReader.Create(AFileName, TEncoding.UTF8, True);
-    try
-      while not Reader.EndOfStream do
-        AddLine(Reader.ReadLine);
-    finally
-      Reader.Free;
-    end;
+  Reader := TStreamReader.Create(AStream, TEncoding.UTF8, True);
+  try
+    while not Reader.EndOfStream do
+      AddLine(Reader.ReadLine);
+  finally
+    Reader.Free;
   end;
   Result := FHosts.Count;
 end;

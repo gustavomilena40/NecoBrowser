@@ -191,14 +191,16 @@ begin
     Check(NecoSearchEngineFromId(NecoSearchEngineId(seDuckDuckGoHtml)) = seDuckDuckGoHtml,
       'id do DuckDuckGo HTML vai e volta');
     Check(S.NecoShown, 'Neco ligada por padrao');
+    Check(S.FormAutofill and S.SavePasswords, 'formularios e senhas ligados por padrao');
     S.SearchEngine := seDuckDuckGo;
     S.Theme := ntLight;
     S.BlockerEnabled := False;
     S.NecoShown := False;
+    S.SavePasswords := False;
     S.Save;
     S2.Load;
     Check((S2.SearchEngine = seDuckDuckGo) and (S2.Theme = ntLight) and not S2.BlockerEnabled and
-      not S2.NecoShown, 'ida e volta');
+      not S2.NecoShown and S2.FormAutofill and not S2.SavePasswords, 'ida e volta');
   finally
     S.Free;
     S2.Free;

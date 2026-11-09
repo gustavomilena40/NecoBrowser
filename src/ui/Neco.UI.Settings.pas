@@ -14,7 +14,7 @@ uses
   Neco.Core.Url, Neco.Core.Settings, Neco.UI.Theme, Neco.UI.Neco, Neco.UI.SidePanel;
 
 type
-  TNecoSettingsChange = (scSearch, scTheme, scBlocker, scNeco);
+  TNecoSettingsChange = (scSearch, scTheme, scBlocker, scAutofill, scNeco);
   TNecoSettingsChangeEvent = procedure(Sender: TObject; AChange: TNecoSettingsChange) of object;
 
   /// Uma linha clicável: opção de escolha única (bolinha) ou chave liga/desliga.
@@ -42,6 +42,8 @@ type
     FSearch: array[TNecoSearchEngine] of TNecoOptionRow;
     FTheme: array[TNecoTheme] of TNecoOptionRow;
     FBlocker: TNecoOptionRow;
+    FForms: TNecoOptionRow;
+    FPasswords: TNecoOptionRow;
     FNeco: TNecoOptionRow;
     FNecoSprite: TNecoSprite;
     FSections: TArray<TLabel>;
@@ -220,6 +222,12 @@ begin
   FBlocker := Option(True, 'Bloquear anúncios e rastreadores',
     FormatFloat('#,##0', FBlockedHosts) + ' domínios na lista');
 
+  Section('Formulários e senhas');
+  FForms := Option(True, 'Lembrar o que eu digito em formulários',
+    'nome, e-mail, endereço: sugere de novo na próxima vez');
+  FPasswords := Option(True, 'Oferecer para salvar senhas',
+    'guardadas cifradas no seu usuário do Windows');
+
   Section('Neco-Arc');
   FNeco := Option(True, 'Mostrar a Neco', 'na faixa de abas, nos painéis e na página de erro');
   Stage := TLayout.Create(Self);
@@ -279,6 +287,16 @@ begin
     FSettings.BlockerEnabled := not FSettings.BlockerEnabled;
     DoChanged(scBlocker);
   end;
+  if Sender = FForms then
+  begin
+    FSettings.FormAutofill := not FSettings.FormAutofill;
+    DoChanged(scAutofill);
+  end;
+  if Sender = FPasswords then
+  begin
+    FSettings.SavePasswords := not FSettings.SavePasswords;
+    DoChanged(scAutofill);
+  end;
   if Sender = FNeco then
   begin
     FSettings.NecoShown := not FSettings.NecoShown;
@@ -305,6 +323,8 @@ begin
   for T := Low(TNecoTheme) to High(TNecoTheme) do
     FTheme[T].Checked := FSettings.Theme = T;
   FBlocker.Checked := FSettings.BlockerEnabled;
+  FForms.Checked := FSettings.FormAutofill;
+  FPasswords.Checked := FSettings.SavePasswords;
   FNeco.Checked := FSettings.NecoShown;
   FNecoSprite.Repaint;
 end;

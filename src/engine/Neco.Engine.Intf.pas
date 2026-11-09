@@ -76,6 +76,9 @@ type
     procedure ExecuteScript(const AScript: string);
     /// Pede aos sites o esquema de cor escuro (prefers-color-scheme).
     procedure SetDarkMode(ADark: Boolean);
+    /// AForms: lembrar e sugerir o que foi digitado em formulários.
+    /// APasswords: oferecer salvar senhas (o motor guarda cifradas no perfil dele).
+    procedure SetAutofill(AForms, APasswords: Boolean);
     /// Solta o motor nativo e desliga todos os eventos. Chamadas posteriores são ignoradas.
     procedure Close;
 

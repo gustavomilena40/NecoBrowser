@@ -40,6 +40,8 @@ var
 begin
   O.UserDataFolder := TPath.Combine(AConfig.WebDataDir, 'WebView2');
   O.LoaderPath := TPath.Combine(ExtractFilePath(ParamStr(0)), 'WebView2Loader.dll');
+  O.BinFolder := TPath.Combine(AConfig.WebDataDir, 'bin' + PathDelim +
+    {$IFDEF WIN64}'x64'{$ELSE}'x86'{$ENDIF});
   O.DownloadsFolder := AConfig.DownloadsDir;
   O.Language := AConfig.Language;
   O.BackgroundColor := AConfig.BackgroundColor;

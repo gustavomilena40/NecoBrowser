@@ -89,6 +89,7 @@ type
     procedure UpdateMaxButton;
     procedure FormResized(Sender: TObject);
     procedure LoadData;
+    procedure LoadBlocklist;
     procedure SaveData;
     function BlockerOn: Boolean;
     function StartUrl: string;
@@ -167,10 +168,12 @@ var
 implementation
 
 uses
-  System.IOUtils, System.Math,
+  System.IOUtils, System.Math, System.ZLib,
   Neco.Core.Url, Neco.Core.Trace, Neco.Engine.Factory;
 
 {$R *.fmx}
+// Lista de bloqueio comprimida (tools\neco_embutidos.py): o exe funciona sem arquivos ao lado.
+{$R NecoData.res}
 
 { TFormMain }
 
@@ -281,12 +284,44 @@ begin
   FSettings := TNecoSettings.Create(System.SysUtils.GetEnvironmentVariable('NECO_DADOS'));
   FSettings.Load;
   FBlocklist := TNecoBlocklist.Create;
-  FBlocklist.LoadFromFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'blocklist-hosts.txt'));
-  NecoTrace(Format('lista de bloqueio: %d hosts', [FBlocklist.Count]));
+  LoadBlocklist;
   FBookmarks := TNecoBookmarks.Create;
   FBookmarks.LoadFromFile(FSettings.BookmarksFile);
   FHistory := TNecoHistory.Create;
   FHistory.LoadFromFile(FSettings.HistoryFile);
+end;
+
+procedure TFormMain.LoadBlocklist;
+var
+  Arq: string;
+  RS: TResourceStream;
+  Z: TZDecompressionStream;
+begin
+  // A do lado do exe ganha (dá para atualizar sem recompilar); senão, a embutida.
+  Arq := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'blocklist-hosts.txt');
+  try
+    if FileExists(Arq) then
+      FBlocklist.LoadFromFile(Arq)
+    else
+    begin
+      Arq := 'embutida';
+      RS := TResourceStream.Create(HInstance, 'NECO_BLOCKLIST', RT_RCDATA);
+      try
+        Z := TZDecompressionStream.Create(RS);
+        try
+          FBlocklist.LoadFromStream(Z);
+        finally
+          Z.Free;
+        end;
+      finally
+        RS.Free;
+      end;
+    end;
+  except
+    // Sem lista o navegador funciona, só não bloqueia.
+    FBlocklist.Clear;
+  end;
+  NecoTrace(Format('lista de bloqueio: %d hosts (%s)', [FBlocklist.Count, Arq]));
 end;
 
 procedure TFormMain.SaveData;
@@ -822,6 +857,7 @@ begin
   Result.OnPageFocus := TabPageFocus;
   Result.OnNavigated := TabNavigated;
   Result.Engine.SetDarkMode(CurrentTheme = ntDark);
+  Result.Engine.SetAutofill(FSettings.FormAutofill, FSettings.SavePasswords);
   Result.Engine.SetVisible(False);
   if (AIndex >= 0) and (AIndex < FTabs.Count) then
     FTabs.Insert(AIndex, Result)
@@ -1407,6 +1443,8 @@ begin
 end;
 
 procedure TFormMain.SettingsChanged(Sender: TObject; AChange: TNecoSettingsChange);
+var
+  T: TNecoTab;
 begin
   // O painel já gravou a escolha em FSettings; aqui ela passa a valer.
   case AChange of
@@ -1421,6 +1459,9 @@ begin
         if (FActive <> nil) and (FActive.Url <> '') then
           FActive.Engine.Reload;
       end;
+    scAutofill:
+      for T in FTabs do
+        T.Engine.SetAutofill(FSettings.FormAutofill, FSettings.SavePasswords);
     scNeco:
       begin
         FStage.SetShown(FSettings.NecoShown);

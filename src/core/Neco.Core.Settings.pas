@@ -20,6 +20,8 @@ type
     FTheme: TNecoTheme;
     FBlockerEnabled: Boolean;
     FNecoShown: Boolean;
+    FFormAutofill: Boolean;
+    FSavePasswords: Boolean;
     FHomeUrl: string;
     FCustomDir: Boolean;
     function GetSettingsFile: string;
@@ -46,6 +48,10 @@ type
     property BlockerEnabled: Boolean read FBlockerEnabled write FBlockerEnabled;
     /// Mostrar a Neco-Arc (faixa de abas, painéis, página de erro).
     property NecoShown: Boolean read FNecoShown write FNecoShown;
+    /// O motor lembra o que foi digitado em formulários (nome, endereço...) e sugere de novo.
+    property FormAutofill: Boolean read FFormAutofill write FFormAutofill;
+    /// O motor oferece salvar senhas (guardadas cifradas no perfil do motor).
+    property SavePasswords: Boolean read FSavePasswords write FSavePasswords;
     property HomeUrl: string read FHomeUrl write FHomeUrl;
   end;
 
@@ -78,6 +84,8 @@ begin
   FTheme := ntDark;
   FBlockerEnabled := True;
   FNecoShown := True;
+  FFormAutofill := True;
+  FSavePasswords := True;
   FHomeUrl := CDefaultHome;
 end;
 
@@ -120,6 +128,8 @@ begin
       O.AddPair('theme', 'dark');
     O.AddPair('blocker', TJSONBool.Create(FBlockerEnabled));
     O.AddPair('neco', TJSONBool.Create(FNecoShown));
+    O.AddPair('formAutofill', TJSONBool.Create(FFormAutofill));
+    O.AddPair('savePasswords', TJSONBool.Create(FSavePasswords));
     O.AddPair('home', FHomeUrl);
     Result := O.Format(2);
   finally
@@ -142,6 +152,8 @@ begin
       FTheme := ntDark;
     FBlockerEnabled := NecoJsonBool(O, 'blocker', True);
     FNecoShown := NecoJsonBool(O, 'neco', True);
+    FFormAutofill := NecoJsonBool(O, 'formAutofill', True);
+    FSavePasswords := NecoJsonBool(O, 'savePasswords', True);
     FHomeUrl := NecoJsonStr(O, 'home', CDefaultHome);
     if FHomeUrl = '' then
       FHomeUrl := CDefaultHome;

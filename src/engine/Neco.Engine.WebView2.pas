@@ -24,8 +24,11 @@ uses
 type
   TNecoWV2Options = record
     UserDataFolder: string;
-    /// Caminho completo da WebView2Loader.dll.
+    /// Caminho completo da WebView2Loader.dll (normalmente ao lado do exe).
     LoaderPath: string;
+    /// Pasta onde a cópia embutida da DLL é extraída quando a de LoaderPath falta ou
+    /// é de outra arquitetura (exe de 32 bits com DLL de 64, ou o contrário).
+    BinFolder: string;
     DownloadsFolder: string;
     /// Idioma das páginas e do Accept-Language (ex.: 'pt-BR').
     Language: string;
@@ -43,9 +46,17 @@ implementation
 
 {$IFDEF MSWINDOWS}
 uses
-  System.SysUtils, System.Classes, System.Types, System.Generics.Collections,
+  System.SysUtils, System.Classes, System.Types, System.Generics.Collections, System.IOUtils,
   Winapi.Messages, Winapi.ActiveX, Winapi.CommCtrl, Winapi.WebView2, Winapi.EdgeUtils,
   Neco.Core.Trace;
+
+// A WebView2Loader.dll da arquitetura deste exe vai embutida (tools\neco_embutidos.py):
+// o exe roda sozinho em outra máquina, só com o WebView2 Runtime instalado.
+{$IFDEF WIN64}
+{$R NecoLoader64.res}
+{$ELSE}
+{$R NecoLoader32.res}
+{$ENDIF}
 
 type
   TNecoWV2Engine = class;
@@ -117,6 +128,8 @@ type
     FBounds: TRect;
     FVisible: Boolean;
     FDark: Boolean;
+    FAutofillForms: Boolean;
+    FSavePasswords: Boolean;
     FReady: Boolean;
     FClosed: Boolean;
     FLoading: Boolean;
@@ -160,6 +173,7 @@ type
     procedure Blur;
     procedure ExecuteScript(const AScript: string);
     procedure SetDarkMode(ADark: Boolean);
+    procedure SetAutofill(AForms, APasswords: Boolean);
     procedure Close;
   end;
 
@@ -205,6 +219,8 @@ type
 
 const
   CTargetBrowserVersion = '137.0.3296.44';
+  CNoRuntime = 'O WebView2 Runtime da Microsoft não está instalado neste computador. ' +
+    'Instale pelo site da Microsoft (procure "WebView2 Runtime") e abra o NecoBrowser de novo.';
 
 var
   GOptions: TNecoWV2Options;
@@ -288,6 +304,88 @@ begin
     GHooked.Add(AWnd);
 end;
 
+/// Extrai a DLL embutida para AFolder (se ainda não estiver lá, do mesmo tamanho).
+function ExtractEmbeddedLoader(const AFolder: string; out APath: string): Boolean;
+var
+  RS: TResourceStream;
+  F: TFileStream;
+  Tmp: string;
+begin
+  Result := False;
+  APath := '';
+  if (AFolder = '') or (FindResource(HInstance, 'NECO_WV2LOADER', RT_RCDATA) = 0) then
+    Exit;
+  try
+    RS := TResourceStream.Create(HInstance, 'NECO_WV2LOADER', RT_RCDATA);
+    try
+      APath := TPath.Combine(AFolder, 'WebView2Loader.dll');
+      if TFile.Exists(APath) and (TFile.GetSize(APath) = RS.Size) then
+        Exit(True);
+      ForceDirectories(AFolder);
+      // Grava ao lado e troca de uma vez: outra instância pode estar lendo a antiga.
+      Tmp := APath + '.' + IntToStr(GetCurrentProcessId) + '.tmp';
+      F := TFileStream.Create(Tmp, fmCreate);
+      try
+        F.CopyFrom(RS, 0);
+      finally
+        F.Free;
+      end;
+      if MoveFileEx(PChar(Tmp), PChar(APath), MOVEFILE_REPLACE_EXISTING) then
+        Result := True
+      else
+      begin
+        System.SysUtils.DeleteFile(Tmp);
+        Result := TFile.Exists(APath); // em uso por outra instância: serve
+      end;
+    finally
+      RS.Free;
+    end;
+  except
+    Result := False;
+  end;
+end;
+
+/// Carrega a WebView2Loader.dll: primeiro a de LoaderPath; se faltar ou for de outra
+/// arquitetura, a cópia embutida. Em caso de falha, deixa a causa em GEnvError.
+function LoadLoader: Boolean;
+var
+  Err, Err2: Cardinal;
+  P: string;
+begin
+  Err := ERROR_FILE_NOT_FOUND;
+  if (GOptions.LoaderPath <> '') and FileExists(GOptions.LoaderPath) then
+  begin
+    SetWebView2Path(GOptions.LoaderPath);
+    if CheckWebView2Loaded then
+    begin
+      NecoTrace('loader: ' + GOptions.LoaderPath);
+      Exit(True);
+    end;
+    Err := GetLastError;
+  end;
+  if ExtractEmbeddedLoader(GOptions.BinFolder, P) then
+  begin
+    SetWebView2Path(P);
+    if CheckWebView2Loaded then
+    begin
+      NecoTrace(Format('loader: embutido em %s (o do lado do exe deu erro %d)', [P, Err]));
+      Exit(True);
+    end;
+    Err2 := GetLastError;
+    GEnvError := Format('Não foi possível carregar a WebView2Loader.dll (erro %d; a cópia embutida ' +
+      'deu erro %d).', [Err, Err2]);
+    Exit(False);
+  end;
+  if Err = ERROR_BAD_EXE_FORMAT then
+    GEnvError := 'A WebView2Loader.dll ao lado do executável é de outra arquitetura (32 x 64 bits). ' +
+      'Use a da pasta redist\' + {$IFDEF WIN64}'Win64'{$ELSE}'Win32'{$ENDIF} + '.'
+  else if Err = ERROR_FILE_NOT_FOUND then
+    GEnvError := 'WebView2Loader.dll não encontrada ao lado do executável.'
+  else
+    GEnvError := Format('Não foi possível carregar a WebView2Loader.dll (erro %d).', [Err]);
+  Result := False;
+end;
+
 procedure EnsureEnvironment;
 var
   Opts: ICoreWebView2EnvironmentOptions;
@@ -296,12 +394,9 @@ begin
   if GEnvState <> esNone then
     Exit;
   GEnvState := esCreating;
-  if GOptions.LoaderPath <> '' then
-    SetWebView2Path(GOptions.LoaderPath);
-  if not CheckWebView2Loaded then
+  if not LoadLoader then
   begin
     GEnvState := esFailed;
-    GEnvError := 'WebView2Loader.dll não encontrada ao lado do executável.';
     Exit;
   end;
   Opts := TCoreWebView2EnvironmentOptions.Create;
@@ -319,7 +414,7 @@ begin
   begin
     GEnvState := esFailed;
     if HR = HResult($80070002) then
-      GEnvError := 'WebView2 Runtime não encontrado. Instale o Microsoft Edge WebView2 Runtime.'
+      GEnvError := CNoRuntime
     else
       GEnvError := 'Falha ao iniciar o WebView2 (' + HrText(HR) + ').';
   end;
@@ -345,7 +440,7 @@ begin
     begin
       GEnvState := esFailed;
       if errorCode = HResult($80070002) then
-        GEnvError := 'WebView2 Runtime não encontrado. Instale o Microsoft Edge WebView2 Runtime.'
+        GEnvError := CNoRuntime
       else
         GEnvError := 'Falha ao criar o ambiente WebView2 (' + HrText(errorCode) + ').';
     end;
@@ -720,6 +815,8 @@ begin
   FParentWnd := AParentWnd;
   FVisible := True;
   FDark := True;
+  FAutofillForms := True;
+  FSavePasswords := True;
   FSink := TNecoWV2Sink.Create(Self);
   FSinkRef := FSink;
   GEngines.Add(Self);
@@ -829,8 +926,28 @@ procedure TNecoWV2Engine.ApplyProfile;
 var
   W13: ICoreWebView2_13;
   P: ICoreWebView2Profile;
+  P6: ICoreWebView2Profile6;
+  S: ICoreWebView2Settings;
+  S4: ICoreWebView2Settings4;
 begin
-  if (FWebView = nil) or not Supports(FWebView, ICoreWebView2_13, W13) then
+  if FWebView = nil then
+    Exit;
+  // Formulários e senhas: no perfil (vale para todas as abas) ou, em runtime antigo, por aba.
+  if Supports(FWebView, ICoreWebView2_13, W13) and Succeeded(W13.Get_Profile(P)) and
+    Supports(P, ICoreWebView2Profile6, P6) then
+  begin
+    P6.Set_IsGeneralAutofillEnabled(Ord(FAutofillForms));
+    P6.Set_IsPasswordAutosaveEnabled(Ord(FSavePasswords));
+    NecoTrace(Format('preenchimento (perfil): formularios=%d senhas=%d', [Ord(FAutofillForms), Ord(FSavePasswords)]));
+  end
+  else if Succeeded(FWebView.Get_Settings(S)) and Supports(S, ICoreWebView2Settings4, S4) then
+  begin
+    S4.Set_IsGeneralAutofillEnabled(Ord(FAutofillForms));
+    S4.Set_IsPasswordAutosaveEnabled(Ord(FSavePasswords));
+    NecoTrace(Format('preenchimento (aba): formularios=%d senhas=%d', [Ord(FAutofillForms), Ord(FSavePasswords)]));
+  end;
+  P := nil;
+  if not Supports(FWebView, ICoreWebView2_13, W13) then
     Exit;
   if Failed(W13.Get_Profile(P)) or (P = nil) then
     Exit;
@@ -993,6 +1110,13 @@ end;
 procedure TNecoWV2Engine.SetDarkMode(ADark: Boolean);
 begin
   FDark := ADark;
+  ApplyProfile;
+end;
+
+procedure TNecoWV2Engine.SetAutofill(AForms, APasswords: Boolean);
+begin
+  FAutofillForms := AForms;
+  FSavePasswords := APasswords;
   ApplyProfile;
 end;
 
