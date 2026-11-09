@@ -80,8 +80,12 @@ type
     function StartUrl: string;
 
     // abas
-    function NewTab(const AUrl: string; AActivate: Boolean = True): TNecoTab;
+    /// AIndex < 0: no fim da faixa.
+    function NewTab(const AUrl: string; AActivate: Boolean = True; AIndex: Integer = -1): TNecoTab;
     procedure ActivateTab(ATab: TNecoTab);
+    /// Troca de aba pelo teclado: ativa e põe o foco na página.
+    procedure SwitchTab(ADelta: Integer);
+    procedure SelectTab(AIndex: Integer);
     procedure CloseTab(ATab: TNecoTab);
     procedure TabChanged(Sender: TObject; AChange: TNecoTabChange);
     procedure TabNewWindow(Sender: TObject; const AUrl: string);
@@ -315,7 +319,7 @@ begin
   FTabStrip.OnResized := TabStripResized;
   FTabStrip.OnMouseDown := TabStripMouseDown;
 
-  FBtnNewTab := NecoNewButton(Self, FTabStrip, ICO_MAIS, 'Nova aba', NewTabClick);
+  FBtnNewTab := NecoNewButton(Self, FTabStrip, ICO_MAIS, 'Nova aba (Ctrl+T)', NewTabClick);
   FBtnNewTab.Width := 28;
   FBtnNewTab.Height := 28;
   FBtnNewTab.XRadius := 14;
@@ -683,7 +687,7 @@ end;
 
 { Abas }
 
-function TFormMain.NewTab(const AUrl: string; AActivate: Boolean): TNecoTab;
+function TFormMain.NewTab(const AUrl: string; AActivate: Boolean; AIndex: Integer): TNecoTab;
 begin
   Result := TNecoTab.Create(Self, FBlocklist, BlockerOn);
   Result.OnChanged := TabChanged;
@@ -694,7 +698,10 @@ begin
   Result.OnNavigated := TabNavigated;
   Result.Engine.SetDarkMode(CurrentTheme = ntDark);
   Result.Engine.SetVisible(False);
-  FTabs.Add(Result);
+  if (AIndex >= 0) and (AIndex < FTabs.Count) then
+    FTabs.Insert(AIndex, Result)
+  else
+    FTabs.Add(Result);
   BuildTabButton(Result);
   LayoutTabStrip;
   if AActivate or (FActive = nil) then
@@ -726,14 +733,39 @@ begin
   UpdatePageMessage;
 end;
 
+procedure TFormMain.SwitchTab(ADelta: Integer);
+var
+  I: Integer;
+begin
+  if FTabs.Count < 2 then
+    Exit;
+  I := FTabs.IndexOf(FActive);
+  I := (I + ADelta + FTabs.Count) mod FTabs.Count;
+  SelectTab(I);
+end;
+
+procedure TFormMain.SelectTab(AIndex: Integer);
+begin
+  if (AIndex < 0) or (AIndex >= FTabs.Count) then
+    Exit;
+  if FTabs[AIndex] <> FActive then
+    ActivateTab(FTabs[AIndex]);
+  // A página que tinha o foco ficou escondida: o teclado vai para a nova.
+  if FAddress.IsFocused then
+    FAddress.ResetFocus;
+  FActive.Engine.Focus;
+end;
+
 procedure TFormMain.CloseTab(ATab: TNecoTab);
 var
   I: Integer;
   B: TRectangle;
+  WasActive: Boolean;
 begin
   I := FTabs.IndexOf(ATab);
   if I < 0 then
     Exit;
+  WasActive := ATab = FActive;
   ATab.Close;
   FTabs.Delete(I);
   // A aba na faixa (o X e o título são filhos dela e vão junto). Quem chama já está
@@ -752,7 +784,10 @@ begin
   end;
   ATab.Free;
   if FTabs.Count = 0 then
-    NewTab(FSettings.HomeUrl);
+    NewTab(FSettings.HomeUrl)
+  else if WasActive and not FAddress.IsFocused then
+    // A página fechada tinha o teclado: ele passa para a aba que assumiu.
+    FActive.Engine.Focus;
 end;
 
 procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
@@ -787,8 +822,25 @@ begin
 end;
 
 procedure TFormMain.TabNewWindow(Sender: TObject; const AUrl: string);
+var
+  Opener: TNecoTab;
 begin
-  TNecoTab(Sender).Navigate(AUrl);
+  // Pop-up e target=_blank: aba nova logo depois da que pediu, como no Chrome.
+  // Vem de dentro do callback do motor da aba de origem: a troca de aba roda depois.
+  Opener := TNecoTab(Sender);
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      I: Integer;
+    begin
+      if FShuttingDown then
+        Exit;
+      I := FTabs.IndexOf(Opener);
+      if I >= 0 then
+        NewTab(AUrl, True, I + 1)
+      else
+        NewTab(AUrl);
+    end);
 end;
 
 procedure TFormMain.TabDownload(Sender: TObject; const ADownload: INecoDownload);
@@ -1013,17 +1065,45 @@ end;
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
 var
   Acao: TProc;
+  M: TShiftState;
+  N: Integer;
 begin
   Acao := nil;
-  if (AShift * [ssCtrl, ssAlt, ssShift] = [ssCtrl]) and (AKey = vkL) then
+  M := AShift * [ssCtrl, ssAlt, ssShift];
+  if (M = [ssCtrl]) and (AKey = vkL) then
     Acao := FocusAddress
-  else if (AShift * [ssCtrl, ssAlt, ssShift] = [ssCtrl]) and (AKey = vkW) then
+  else if (M = [ssCtrl]) and (AKey = vkT) then
+    Acao := procedure
+      begin
+        NewTab(FSettings.HomeUrl);
+        FocusAddress;
+      end
+  else if (M = [ssCtrl]) and (AKey = vkW) then
     Acao := procedure begin CloseTab(FActive); end
-  else if (AShift * [ssCtrl, ssAlt] = []) and (AKey = vkF5) then
+  else if (M = [ssCtrl]) and (AKey = vkTab) then
+    Acao := procedure begin SwitchTab(1); end
+  else if (M = [ssCtrl, ssShift]) and (AKey = vkTab) then
+    Acao := procedure begin SwitchTab(-1); end
+  else if (M = [ssCtrl]) and (AKey >= vk1) and (AKey <= vk9) then
+  begin
+    // Ctrl+1..8: aba pela posição; Ctrl+9: a última (como no Chrome).
+    N := AKey - vk1;
+    Acao := procedure
+      begin
+        if N = 8 then
+          SelectTab(FTabs.Count - 1)
+        else
+          SelectTab(N);
+      end;
+  end
+  else if ((M * [ssCtrl, ssAlt] = []) and (AKey = vkF5)) or ((M = [ssCtrl]) and (AKey = vkR)) then
     Acao := procedure begin ReloadClick(nil); end
-  else if (AShift * [ssCtrl, ssAlt, ssShift] = [ssAlt]) and (AKey = vkLeft) then
+  else if (M = []) and (AKey = vkEscape) and (FActive <> nil) and FActive.Loading then
+    // Só com a página carregando: no resto do tempo o Esc é da página.
+    Acao := procedure begin if (FActive <> nil) and FActive.Loading then FActive.Engine.Stop; end
+  else if (M = [ssAlt]) and (AKey = vkLeft) then
     Acao := procedure begin BackClick(nil); end
-  else if (AShift * [ssCtrl, ssAlt, ssShift] = [ssAlt]) and (AKey = vkRight) then
+  else if (M = [ssAlt]) and (AKey = vkRight) then
     Acao := procedure begin ForwardClick(nil); end;
   Result := Assigned(Acao);
   if Result then
