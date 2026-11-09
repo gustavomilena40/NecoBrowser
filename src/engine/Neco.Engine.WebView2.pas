@@ -122,6 +122,10 @@ type
     FLoading: Boolean;
     /// A navegação em curso virou download (a falha dela não é erro de página).
     FNavDownload: Boolean;
+    /// Id da navegação principal em curso. O aviso de fim de uma navegação já substituída
+    /// (clique num link com outra carregando, redirecionamento por script) chega depois do
+    /// início da nova: ele é ignorado, senão a página nova viraria página de erro.
+    FNavId: UInt64;
     /// URL da navegação principal em curso: o bloqueador nunca barra este documento.
     FMainNavUrl: string;
     // diagnóstico (NECO_TRACE)
@@ -237,12 +241,14 @@ begin
     COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:
       Result := neTimeout;
     COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE, COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT,
-    COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:
+    COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET:
       Result := neRefused;
     COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT..
     COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:
       Result := neCertificate;
-    COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED:
+    // ERR_ABORTED do Chromium: a navigação foi trocada por outra (clique num link com a
+    // página ainda carregando, redirecionamento por script, login). O Chrome não mostra erro.
+    COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:
       Result := neCanceled;
   else
     Result := neOther;
@@ -403,6 +409,7 @@ var
   P: PWideChar;
   Url: string;
   Cancel: Boolean;
+  Id: UInt64;
 begin
   Result := S_OK;
   E := FEngine;
@@ -414,6 +421,9 @@ begin
       Url := TakeStr(P);
     E.FMainNavUrl := Url;
     E.FNavDownload := False;
+    if Failed(args.Get_NavigationId(Id)) then
+      Id := 0;
+    E.FNavId := Id;
     E.FNavStartMs := NecoTraceMs;
     E.FResCount := 0;
     E.FResBlocked := 0;
@@ -440,6 +450,7 @@ var
   Ok: Integer;
   St: COREWEBVIEW2_WEB_ERROR_STATUS;
   Err: TNecoNavError;
+  Id: UInt64;
 begin
   Result := S_OK;
   E := FEngine;
@@ -447,6 +458,11 @@ begin
     Exit;
   Keep := E;
   try
+    if Succeeded(args.Get_NavigationId(Id)) and (Id <> E.FNavId) then
+    begin
+      NecoTrace(Format('nav fim ignorado (navegacao %d substituida pela %d)', [Id, E.FNavId]));
+      Exit;
+    end;
     E.FLoading := False;
     if Failed(args.Get_IsSuccess(Ok)) then
       Ok := 0;

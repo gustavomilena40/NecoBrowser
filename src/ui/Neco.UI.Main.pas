@@ -29,6 +29,9 @@ type
     FActive: TNecoTab;
     FStarted: Boolean;
     FShuttingDown: Boolean;
+    // teste de memória (NECO_TESTE_ABAS): abre e fecha abas sozinho, em ciclos
+    FSelfTest: TTimer;
+    FSelfTestTabs, FSelfTestCycles, FSelfTestCycle, FSelfTestStep: Integer;
 
     // faixa de abas = barra de título (Neco.UI.Frame)
     FTabStrip: TRectangle;
@@ -149,6 +152,7 @@ type
     procedure SetTheme(ATheme: TNecoTheme);
     procedure SaveSettings;
     procedure ErrorRetry(Sender: TObject);
+    procedure SelfTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
   protected
@@ -213,6 +217,15 @@ begin
     ShowPanel(FPanelBookmarks)
   else if SameText(P, 'config') then
     ShowPanel(FPanelSettings);
+  // Teste de memória: NECO_TESTE_ABAS=<n> [NECO_TESTE_CICLOS=<c>] (ver SelfTestTick).
+  FSelfTestTabs := StrToIntDef(System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS'), 0);
+  if FSelfTestTabs > 0 then
+  begin
+    FSelfTestCycles := StrToIntDef(System.SysUtils.GetEnvironmentVariable('NECO_TESTE_CICLOS'), 3);
+    FSelfTest := TTimer.Create(Self);
+    FSelfTest.Interval := 15000; // abertura assentada antes da primeira medida
+    FSelfTest.OnTimer := SelfTestTick;
+  end;
 end;
 
 function TFormMain.StartUrl: string;
@@ -241,6 +254,8 @@ begin
   // antes de liberar o que eles consultam.
   NecoFrameDetach;
   FStage.Stop;
+  if FSelfTest <> nil then
+    FSelfTest.Enabled := False;
   FProgressTimer.Enabled := False;
   FPanelDownloads.Shutdown;
   FBookmarks.OnChange := nil;
@@ -1420,6 +1435,60 @@ procedure TFormMain.ErrorRetry(Sender: TObject);
 begin
   if FActive <> nil then
     FActive.Retry;
+end;
+
+{ Teste de memória }
+
+procedure TFormMain.SelfTestTick(Sender: TObject);
+var
+  I: Integer;
+begin
+  // Cada marca 'teste fase=...' sai no rastro com o sistema em repouso; quem mede
+  // (fora do processo) lê a memória nesse instante. Depois da marca, 5 s antes de mexer.
+  // Ciclo: abre N abas -> 30 s -> marca 'abertas' -> fecha -> 45 s -> marca 'fechadas'.
+  if FShuttingDown then
+    Exit;
+  case FSelfTestStep of
+    0:
+      begin
+        NecoTrace('teste fase=base ciclo=0 abas=' + IntToStr(FTabs.Count));
+        FSelfTest.Interval := 5000;
+        FSelfTestStep := 1;
+      end;
+    1:
+      begin
+        Inc(FSelfTestCycle);
+        for I := 1 to FSelfTestTabs do
+          NewTab('https://example.com/?neco=' + IntToStr(I), False);
+        FSelfTest.Interval := 30000;
+        FSelfTestStep := 2;
+      end;
+    2:
+      begin
+        NecoTrace(Format('teste fase=abertas ciclo=%d abas=%d', [FSelfTestCycle, FTabs.Count]));
+        FSelfTest.Interval := 5000;
+        FSelfTestStep := 3;
+      end;
+    3:
+      begin
+        while FTabs.Count > 1 do
+          CloseTab(FTabs[FTabs.Count - 1]);
+        FSelfTest.Interval := 45000;
+        FSelfTestStep := 4;
+      end;
+    4:
+      begin
+        NecoTrace(Format('teste fase=fechadas ciclo=%d abas=%d', [FSelfTestCycle, FTabs.Count]));
+        FSelfTest.Interval := 5000;
+        if FSelfTestCycle < FSelfTestCycles then
+          FSelfTestStep := 1
+        else
+        begin
+          NecoTrace('teste fim');
+          FSelfTest.Enabled := False;
+        end;
+      end;
+  end;
 end;
 
 { Bloqueador }
