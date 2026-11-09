@@ -125,6 +125,7 @@ type
     // diagnóstico (NECO_TRACE)
     FNavStartMs: Double;
     FResCount: Integer;
+    FResBlocked: Integer;
     FResMs: Double;
     procedure StartController;
     procedure ControllerCreated(AError: HResult; const AController: ICoreWebView2Controller);
@@ -390,6 +391,7 @@ begin
     E.FMainNavUrl := Url;
     E.FNavStartMs := NecoTraceMs;
     E.FResCount := 0;
+    E.FResBlocked := 0;
     E.FResMs := 0;
     NecoTrace('nav inicio ' + Url);
     E.FLoading := True;
@@ -422,8 +424,8 @@ begin
     if Failed(args.Get_IsSuccess(Ok)) then
       Ok := 0;
     if NecoTraceOn then
-      NecoTrace(Format('nav fim ok=%d duracao=%.0fms requisicoes_filtradas=%d tempo_no_filtro=%.1fms',
-        [Ok, NecoTraceMs - E.FNavStartMs, E.FResCount, E.FResMs]));
+      NecoTrace(Format('nav fim ok=%d duracao=%.0fms requisicoes_filtradas=%d bloqueadas=%d tempo_no_filtro=%.1fms',
+        [Ok, NecoTraceMs - E.FNavStartMs, E.FResCount, E.FResBlocked, E.FResMs]));
     if Assigned(E.FOnNavigationCompleted) then
       E.FOnNavigationCompleted(E, Ok <> 0);
   except
@@ -537,8 +539,11 @@ begin
         (Url = E.FMainNavUrl) then
         Exit; // a página principal que o usuário abriu nunca é bloqueada
       if E.FRequestFilter(Url) then
+      begin
+        Inc(E.FResBlocked);
         if Succeeded(GEnv.CreateWebResourceResponse(nil, 403, 'Blocked', '', Resp)) then
           args.Set_Response(Resp);
+      end;
     finally
       Inc(E.FResCount);
       E.FResMs := E.FResMs + (NecoTraceMs - T0);

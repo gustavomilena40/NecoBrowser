@@ -41,6 +41,10 @@ type
     FAddressBox: TRectangle;
     FAddressIcon: TPath;
     FAddress: TEdit;
+    FToolRight: TLayout;
+    FBtnShield: TNecoIconButton;
+    FShieldBadge: TRectangle;
+    FShieldBadgeText: TLabel;
     FProgressTrack: TLayout;
     FProgress: TRectangle;
     FProgressTimer: TTimer;
@@ -112,6 +116,10 @@ type
     procedure AddressEnter(Sender: TObject);
     procedure AddressExit(Sender: TObject);
     procedure FocusAddress;
+    // bloqueador
+    function AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
+    procedure UpdateShield;
+    procedure ShieldClick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
   protected
@@ -216,6 +224,7 @@ begin
   FSettings.Load;
   FBlocklist := TNecoBlocklist.Create;
   FBlocklist.LoadFromFile(System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'blocklist-hosts.txt'));
+  NecoTrace(Format('lista de bloqueio: %d hosts', [FBlocklist.Count]));
   FBookmarks := TNecoBookmarks.Create;
   FBookmarks.LoadFromFile(FSettings.BookmarksFile);
   FHistory := TNecoHistory.Create;
@@ -624,10 +633,33 @@ begin
   FBtnReload.Align := TAlignLayout.Left;
   FBtnReload.Position.X := 200;
 
+  // Botões da direita: um contêiner só (Align=Right entre irmãos ordena mal; ver skill),
+  // com os botões em Align=Left na ordem de criação. AddToolButton recalcula a largura.
+  FToolRight := TLayout.Create(Self);
+  FToolRight.Parent := FToolbar;
+  FToolRight.Align := TAlignLayout.Right;
+  FToolRight.Padding.Rect := TRectF.Create(0, 6, 8, 6);
+  FToolRight.Width := 8;
+
+  FBtnShield := AddToolButton(ICO_ESCUDO, '', ShieldClick);
+  // Selo com o número de bloqueados, no canto do escudo (como os selos de extensão do Chrome).
+  FShieldBadge := TRectangle.Create(Self);
+  FShieldBadge.Parent := FBtnShield;
+  FShieldBadge.HitTest := False;
+  FShieldBadge.Stroke.Kind := TBrushKind.None;
+  FShieldBadge.XRadius := 6;
+  FShieldBadge.YRadius := 6;
+  FShieldBadge.Visible := False;
+  FShieldBadgeText := NecoNewLabel(Self, FShieldBadge, '', 9);
+  FShieldBadgeText.Align := TAlignLayout.Client;
+  FShieldBadgeText.TextSettings.HorzAlign := TTextAlign.Center;
+  FShieldBadgeText.TextSettings.Font.Style := [TFontStyle.fsBold];
+  FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
+
   FAddressBox := TRectangle.Create(Self);
   FAddressBox.Parent := FToolbar;
   FAddressBox.Align := TAlignLayout.Client;
-  FAddressBox.Margins.Rect := TRectF.Create(8, 7, 12, 7);
+  FAddressBox.Margins.Rect := TRectF.Create(8, 7, 6, 7);
   FAddressBox.XRadius := 16;
   FAddressBox.YRadius := 16;
   FAddressBox.Stroke.Thickness := 1;
@@ -683,6 +715,7 @@ begin
   FBtnBack.Restyle;
   FBtnForward.Restyle;
   FBtnReload.Restyle;
+  UpdateShield;
 end;
 
 { Abas }
@@ -731,6 +764,7 @@ begin
   UpdateProgress;
   UpdateCaption;
   UpdatePageMessage;
+  UpdateShield;
 end;
 
 procedure TFormMain.SwitchTab(ADelta: Integer);
@@ -813,6 +847,8 @@ begin
       end;
     tcHistory:
       UpdateNavButtons;
+    tcBlocked:
+      UpdateShield;
     tcError:
       begin
         UpdateProgress;
@@ -1060,6 +1096,73 @@ begin
     FActive.Engine.Blur;
   FAddress.SetFocus;
   FAddress.SelectAll;
+end;
+
+{ Bloqueador }
+
+function TFormMain.AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
+begin
+  Result := NecoNewButton(Self, FToolRight, AIcon, AHint, AOnClick);
+  Result.Align := TAlignLayout.Left;
+  Result.Margins.Left := 2;
+  Result.Position.X := FToolRight.Width; // depois dos que já existem
+  FToolRight.Width := FToolRight.Width + CButtonSize + 2;
+end;
+
+procedure TFormMain.UpdateShield;
+var
+  N: Integer;
+  S: string;
+begin
+  if FBtnShield = nil then
+    Exit;
+  N := 0;
+  if FActive <> nil then
+    N := FActive.BlockedCount;
+  if BlockerOn then
+  begin
+    FBtnShield.IconData := ICO_ESCUDO;
+    FBtnShield.IconColor := Palette.Shield;
+    if N = 1 then
+      S := '1 anúncio ou rastreador barrado nesta página.'
+    else
+      S := Format('%d anúncios e rastreadores barrados nesta página.', [N]);
+    FBtnShield.Hint := 'Bloqueador ligado: ' + S + ' Clique para desligar.';
+  end
+  else
+  begin
+    FBtnShield.IconData := ICO_ESCUDO_OFF;
+    FBtnShield.IconColor := Palette.TextMuted;
+    FBtnShield.Hint := 'Bloqueador desligado. Clique para ligar.';
+    N := 0;
+  end;
+  FShieldBadge.Visible := N > 0;
+  if N > 0 then
+  begin
+    if N > 99 then
+      S := '99+'
+    else
+      S := IntToStr(N);
+    FShieldBadge.Fill.Color := Palette.Shield;
+    FShieldBadgeText.TextSettings.FontColor := Palette.Window;
+    FShieldBadgeText.Text := S;
+    FShieldBadge.SetBounds(CButtonSize - 4 - (6 + 6 * Length(S)), CButtonSize - 15,
+      6 + 6 * Length(S), 13);
+  end;
+end;
+
+procedure TFormMain.ShieldClick(Sender: TObject);
+begin
+  FSettings.BlockerEnabled := not FSettings.BlockerEnabled;
+  try
+    FSettings.Save;
+  except
+    // Sem disco: a escolha vale até fechar o app.
+  end;
+  UpdateShield;
+  // Como as extensões de bloqueio: a página recarrega já com a nova regra.
+  if (FActive <> nil) and (FActive.Url <> '') then
+    FActive.Engine.Reload;
 end;
 
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
