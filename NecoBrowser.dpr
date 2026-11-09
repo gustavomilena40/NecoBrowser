@@ -15,6 +15,8 @@ uses
   Neco.Engine.Factory in 'src\engine\Neco.Engine.Factory.pas',
   Neco.UI.Theme in 'src\ui\Neco.UI.Theme.pas',
   Neco.UI.Tab in 'src\ui\Neco.UI.Tab.pas',
+  Neco.UI.Frame in 'src\ui\Neco.UI.Frame.pas',
+  Neco.UI.Neco in 'src\ui\Neco.UI.Neco.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}

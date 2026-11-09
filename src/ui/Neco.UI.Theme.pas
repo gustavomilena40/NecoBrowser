@@ -32,7 +32,16 @@ type
   end;
 
 const
-  CTabStripHeight = 38;
+  // A faixa de abas é também a barra de título (Neco.UI.Frame). A altura cabe a
+  // Neco de pé em tamanho natural (45 px de altura nos sprites).
+  CTabStripHeight = 46;
+  CTabTop = 8;                 // espaço acima das abas (arrastar e redimensionar pelo topo)
+  CTabHeight = CTabStripHeight - CTabTop;
+  CCaptionButtonWidth = 46;    // minimizar, maximizar e fechar, como no Windows 11
+  CCaptionButtonHeight = 34;
+  CNecoSeatWidth = 72;         // o canto da Neco, entre as abas e os botões da janela
+  CCloseHover = $FFC42B1C;     // fundo do X da janela com o mouse em cima
+  CCloseHoverPressed = $FFB22A1B;
   CToolbarHeight = 46;
   CButtonSize = 34;
   CIconSize = 18;
@@ -98,6 +107,15 @@ const
   ICO_LIXEIRA =
     'M0 0 M24 24 M3 6 L21 6 M19 6 L19 20 C19 21 18 22 17 22 L7 22 C6 22 5 21 5 20 L5 6 M8 6 L8 ' +
     '4 C8 3 9 2 10 2 L14 2 C15 2 16 3 16 4 L16 6';
+  // Botões da janela, no traço fino do Windows 11 (desenhados com traço 1).
+  ICO_JANELA_MINIMIZAR =
+    'M0 0 M24 24 M2 12 L22 12';
+  ICO_JANELA_MAXIMIZAR =
+    'M0 0 M24 24 M2 2 L22 2 L22 22 L2 22 Z';
+  ICO_JANELA_RESTAURAR =
+    'M0 0 M24 24 M2 7 L17 7 L17 22 L2 22 Z M7 7 L7 2 L22 2 L22 17 L17 17';
+  ICO_JANELA_FECHAR =
+    'M0 0 M24 24 M2 2 L22 22 M22 2 L2 22';
 
 type
   /// Botão quadrado (ou com texto) desenhado com TRectangle + TPath (+ TLabel).
@@ -110,10 +128,16 @@ type
     FIconColor: TAlphaColor;   // 0 = cor de texto da paleta
     FFilled: Boolean;
     FBaseColor: TAlphaColor;   // 0 = transparente
+    FHoverColor: TAlphaColor;  // 0 = Palette.Hover
+    FHoverIconColor: TAlphaColor; // 0 = a mesma cor do ícone
+    FPressedColor: TAlphaColor;   // 0 = Palette.Pressed
+    FHot: Boolean;             // hover vindo de fora (botão maximizar: o mouse está no não-cliente)
     procedure SetIconData(const AValue: string);
     procedure SetIconColor(AValue: TAlphaColor);
     procedure SetFilled(AValue: Boolean);
     procedure SetBaseColor(AValue: TAlphaColor);
+    procedure SetHot(AValue: Boolean);
+    procedure SetIconSize(AValue: Single);
     function GetCaptionText: string;
     procedure SetCaptionText(const AValue: string);
   protected
@@ -129,6 +153,11 @@ type
     property IconColor: TAlphaColor read FIconColor write SetIconColor;
     property Filled: Boolean read FFilled write SetFilled;
     property BaseColor: TAlphaColor read FBaseColor write SetBaseColor;
+    property HoverColor: TAlphaColor read FHoverColor write FHoverColor;
+    property HoverIconColor: TAlphaColor read FHoverIconColor write FHoverIconColor;
+    property PressedColor: TAlphaColor read FPressedColor write FPressedColor;
+    property Hot: Boolean read FHot write SetHot;
+    property IconSize: Single write SetIconSize;
     property CaptionText: string read GetCaptionText write SetCaptionText;
     property Icon: TPath read FIcon;
   end;
@@ -246,6 +275,20 @@ begin
   Restyle;
 end;
 
+procedure TNecoIconButton.SetHot(AValue: Boolean);
+begin
+  if FHot = AValue then
+    Exit;
+  FHot := AValue;
+  Restyle;
+end;
+
+procedure TNecoIconButton.SetIconSize(AValue: Single);
+begin
+  FIcon.Width := AValue;
+  FIcon.Height := AValue;
+end;
+
 function TNecoIconButton.GetCaptionText: string;
 begin
   if FCaption <> nil then
@@ -272,8 +315,12 @@ end;
 procedure TNecoIconButton.Restyle;
 var
   C: TAlphaColor;
+  Over: Boolean;
 begin
-  if FHover and Enabled then
+  Over := (FHover or FHot) and Enabled;
+  if Over and (FHoverColor <> 0) then
+    Fill.Color := FHoverColor
+  else if Over then
     Fill.Color := Palette.Hover
   else if FBaseColor <> 0 then
     Fill.Color := FBaseColor
@@ -281,7 +328,9 @@ begin
     Fill.Color := TAlphaColors.Null;
   Fill.Kind := TBrushKind.Solid;
 
-  if FIconColor <> 0 then
+  if Over and (FHoverIconColor <> 0) then
+    C := FHoverIconColor
+  else if FIconColor <> 0 then
     C := FIconColor
   else
     C := Palette.Text;
@@ -317,7 +366,9 @@ end;
 
 procedure TNecoIconButton.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 begin
-  if Enabled then
+  if Enabled and (FPressedColor <> 0) then
+    Fill.Color := FPressedColor
+  else if Enabled then
     Fill.Color := Palette.Pressed;
   inherited;
 end;

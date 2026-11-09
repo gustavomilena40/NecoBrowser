@@ -44,7 +44,7 @@
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <DCC_Define>FMX;$(DCC_Define)</DCC_Define>
         <DCC_UnitSearchPath>src\core;src\engine;src\ui;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
-        <Icon_MainIcon>$(BDS)\bin\delphi_PROJECTICON.ico</Icon_MainIcon>
+        <Icon_MainIcon>data\neco.ico</Icon_MainIcon>
         <SanitizedProjectName>NecoBrowser</SanitizedProjectName>
         <VerInfo_Locale>1046</VerInfo_Locale>
         <VerInfo_Keys>CompanyName=;FileDescription=NecoBrowser;FileVersion=0.1.0.0;InternalName=NecoBrowser;LegalCopyright=;LegalTrademarks=;OriginalFilename=NecoBrowser.exe;ProductName=NecoBrowser;ProductVersion=0.1.0.0;Comments=</VerInfo_Keys>
@@ -98,6 +98,8 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="src\engine\Neco.Engine.Factory.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Theme.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Tab.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Frame.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Neco.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>

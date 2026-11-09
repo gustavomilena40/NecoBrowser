@@ -12,7 +12,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
   FMX.Edit,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
-  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab;
+  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco;
 
 type
   TFormMain = class(TForm)
@@ -29,6 +29,12 @@ type
     FStarted: Boolean;
     FShuttingDown: Boolean;
 
+    // faixa de abas = barra de título (Neco.UI.Frame)
+    FTabStrip: TRectangle;
+    FBtnNewTab: TNecoIconButton;
+    FBtnMin, FBtnMax, FBtnClose: TNecoIconButton;
+    FStage: TNecoStage;
+
     // tela
     FToolbar: TRectangle;
     FBtnBack, FBtnForward, FBtnReload: TNecoIconButton;
@@ -43,8 +49,31 @@ type
     FPageMessage: TLabel;
 
     procedure BuildUI;
+    procedure BuildTabStrip;
     procedure BuildToolbar;
     procedure ApplyTheme;
+
+    // faixa de abas
+    procedure AttachFrame;
+    function TitleHitTest(const APoint: TPointF): TNecoFrameHit;
+    procedure LayoutTabStrip;
+    procedure TabStripResized(Sender: TObject);
+    procedure TabStripMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+      X, Y: Single);
+    procedure BuildTabButton(ATab: TNecoTab);
+    procedure StyleTab(ATab: TNecoTab);
+    procedure StyleTabs;
+    procedure UpdateTabTitle(ATab: TNecoTab);
+    procedure TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+      X, Y: Single);
+    procedure TabButtonHover(Sender: TObject);
+    procedure TabCloseClick(Sender: TObject);
+    procedure NewTabClick(Sender: TObject);
+    procedure MinClick(Sender: TObject);
+    procedure MaxClick(Sender: TObject);
+    procedure CloseWindowClick(Sender: TObject);
+    procedure UpdateMaxButton;
+    procedure FormResized(Sender: TObject);
     procedure LoadData;
     procedure SaveData;
     function BlockerOn: Boolean;
@@ -117,6 +146,9 @@ begin
 
   BuildUI;
   ApplyTheme;
+  // A janela já existe aqui (o FMX cria o handle antes do OnCreate): a barra branca
+  // some antes da primeira exibição.
+  AttachFrame;
 end;
 
 procedure TFormMain.FormShow(Sender: TObject);
@@ -126,6 +158,8 @@ begin
     Exit;
   FStarted := True;
   NecoTrace('form visivel');
+  // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
+  AttachFrame;
   NewTab(StartUrl);
 end;
 
@@ -151,6 +185,10 @@ begin
   if FShuttingDown then
     Exit;
   FShuttingDown := True;
+  // A janela ainda recebe mensagens até ser destruída: solta os callbacks da barra
+  // antes de liberar o que eles consultam.
+  NecoFrameDetach;
+  FStage.Stop;
   FProgressTimer.Enabled := False;
   SaveData;
   // Ordem: fechar cada motor (a janela do form ainda existe), depois o ambiente.
@@ -203,13 +241,22 @@ begin
   Caption := 'NecoBrowser';
   Width := 1280;
   Height := 820;
+  OnResize := FormResized;
+
+  FTabStrip := TRectangle.Create(Self);
+  FTabStrip.Parent := Self;
+  FTabStrip.Align := TAlignLayout.Top;
+  FTabStrip.Height := CTabStripHeight;
+  FTabStrip.Stroke.Kind := TBrushKind.None;
+  FTabStrip.Position.Y := 0;
+  BuildTabStrip;
 
   FToolbar := TRectangle.Create(Self);
   FToolbar.Parent := Self;
   FToolbar.Align := TAlignLayout.Top;
   FToolbar.Height := CToolbarHeight;
   FToolbar.Stroke.Kind := TBrushKind.None;
-  FToolbar.Position.Y := 0;
+  FToolbar.Position.Y := 100;
   BuildToolbar;
 
   FProgressTrack := TLayout.Create(Self);
@@ -245,6 +292,310 @@ begin
   FPageMessage.TextSettings.WordWrap := True;
   FPageMessage.TextSettings.HorzAlign := TTextAlign.Center;
   FPageMessage.Visible := False;
+end;
+
+procedure TFormMain.BuildTabStrip;
+
+  function CaptionButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
+  begin
+    Result := NecoNewButton(Self, FTabStrip, AIcon, AHint, AOnClick);
+    Result.XRadius := 0;
+    Result.YRadius := 0;
+    Result.Width := CCaptionButtonWidth;
+    Result.Height := CCaptionButtonHeight;
+    Result.IconSize := 10;
+    Result.Icon.Stroke.Thickness := 1;
+    Result.Icon.Stroke.Cap := TStrokeCap.Flat;
+    Result.Icon.Stroke.Join := TStrokeJoin.Miter;
+  end;
+
+begin
+  // Posições calculadas em LayoutTabStrip (abas, "+", assento da Neco, botões da janela).
+  FTabStrip.ClipChildren := True;
+  FTabStrip.OnResized := TabStripResized;
+  FTabStrip.OnMouseDown := TabStripMouseDown;
+
+  FBtnNewTab := NecoNewButton(Self, FTabStrip, ICO_MAIS, 'Nova aba', NewTabClick);
+  FBtnNewTab.Width := 28;
+  FBtnNewTab.Height := 28;
+  FBtnNewTab.XRadius := 14;
+  FBtnNewTab.YRadius := 14;
+  FBtnNewTab.IconSize := 16;
+
+  FBtnMin := CaptionButton(ICO_JANELA_MINIMIZAR, 'Minimizar', MinClick);
+  FBtnMax := CaptionButton(ICO_JANELA_MAXIMIZAR, 'Maximizar', MaxClick);
+  FBtnClose := CaptionButton(ICO_JANELA_FECHAR, 'Fechar', CloseWindowClick);
+  FBtnClose.HoverColor := CCloseHover;
+  FBtnClose.PressedColor := CCloseHoverPressed;
+  FBtnClose.HoverIconColor := TAlphaColors.White;
+
+  // A Neco por cima de tudo na faixa; não recebe clique (as abas continuam clicáveis).
+  FStage := TNecoStage.Create(Self);
+  FStage.Parent := FTabStrip;
+  FStage.Align := TAlignLayout.Contents;
+  FStage.CanAnimate :=
+    function: Boolean
+    begin
+      Result := not FShuttingDown and not NecoFrameIsMinimized(Self);
+    end;
+  FStage.CanSchedule :=
+    function: Boolean
+    begin
+      Result := NecoFrameIsForeground(Self);
+    end;
+end;
+
+procedure TFormMain.AttachFrame;
+begin
+  NecoFrameAttach(Self, CTabStripHeight, TitleHitTest,
+    procedure(AHot: Boolean)
+    begin
+      if FBtnMax <> nil then
+        FBtnMax.Hot := AHot;
+    end,
+    procedure
+    begin
+      // Vem de dentro do WndProc: a troca de estado roda depois.
+      TThread.ForceQueue(nil,
+        procedure
+        begin
+          if not FShuttingDown then
+            NecoFrameToggleMaximize(Self);
+        end);
+    end);
+  UpdateMaxButton;
+end;
+
+function TFormMain.TitleHitTest(const APoint: TPointF): TNecoFrameHit;
+
+  function Over(AControl: TControl): Boolean;
+  begin
+    Result := (AControl <> nil) and AControl.Visible and AControl.AbsoluteRect.Contains(APoint);
+  end;
+
+var
+  T: TNecoTab;
+begin
+  Result := fhCaption;
+  if FShuttingDown or (FTabs = nil) then
+    Exit;
+  if Over(FBtnMax) then
+    Exit(fhMaxButton);
+  if Over(FBtnMin) or Over(FBtnClose) or Over(FBtnNewTab) then
+    Exit(fhClient);
+  for T in FTabs do
+    if Over(T.Button) then
+      Exit(fhClient);
+  // Em cima da Neco: o clique é dela (ela ri). No resto, arrasta a janela.
+  if FStage.HitActor(FStage.AbsoluteToLocal(APoint)) then
+    Exit(fhClient);
+end;
+
+procedure TFormMain.LayoutTabStrip;
+var
+  W, Right, Avail, TabW, X: Single;
+  T: TNecoTab;
+begin
+  if FTabStrip = nil then
+    Exit;
+  W := FTabStrip.Width;
+  Right := W - 3 * CCaptionButtonWidth;
+  FBtnMin.SetBounds(Right, 0, CCaptionButtonWidth, CCaptionButtonHeight);
+  FBtnMax.SetBounds(Right + CCaptionButtonWidth, 0, CCaptionButtonWidth, CCaptionButtonHeight);
+  FBtnClose.SetBounds(Right + 2 * CCaptionButtonWidth, 0, CCaptionButtonWidth, CCaptionButtonHeight);
+
+  // As abas dividem o espaço até o "+", que fica colado na última; o assento da Neco
+  // é reservado sempre (também é área de arrastar a janela).
+  Avail := Right - CNecoSeatWidth - 8 - (FBtnNewTab.Width + 12);
+  TabW := CTabMaxWidth;
+  if FTabs.Count > 0 then
+    TabW := Max(CTabMinWidth, Min(CTabMaxWidth, Avail / FTabs.Count));
+  X := 8;
+  for T in FTabs do
+    if T.Button <> nil then
+    begin
+      T.Button.SetBounds(X, CTabTop, TabW, CTabHeight);
+      X := X + TabW;
+    end;
+  FBtnNewTab.SetBounds(X + 6, CTabTop + (CTabHeight - FBtnNewTab.Height) / 2,
+    FBtnNewTab.Width, FBtnNewTab.Height);
+  FStage.SeatX := Right - CNecoSeatWidth / 2;
+  FStage.BringToFront;
+end;
+
+procedure TFormMain.TabStripResized(Sender: TObject);
+begin
+  LayoutTabStrip;
+end;
+
+procedure TFormMain.TabStripMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+  X, Y: Single);
+begin
+  // Só chega aqui o clique que o TitleHitTest deixou como "cliente": o da Neco.
+  if (Button = TMouseButton.mbLeft) and
+    FStage.HitActor(FStage.AbsoluteToLocal(FTabStrip.LocalToAbsolute(TPointF.Create(X, Y)))) then
+    FStage.Poke;
+end;
+
+procedure TFormMain.BuildTabButton(ATab: TNecoTab);
+var
+  B: TRectangle;
+  X: TNecoIconButton;
+begin
+  B := TRectangle.Create(Self);
+  B.Parent := FTabStrip;
+  B.Corners := [TCorner.TopLeft, TCorner.TopRight];
+  B.XRadius := 8;
+  B.YRadius := 8;
+  B.Stroke.Kind := TBrushKind.None;
+  B.Fill.Kind := TBrushKind.Solid;
+  B.HitTest := True;
+  B.TagObject := ATab;
+  B.OnMouseDown := TabButtonMouseDown;
+  B.OnMouseEnter := TabButtonHover;
+  B.OnMouseLeave := TabButtonHover;
+  B.Height := CTabHeight;
+  B.Width := CTabMaxWidth;
+
+  X := NecoNewButton(Self, B, ICO_FECHAR, 'Fechar aba (Ctrl+W)', TabCloseClick);
+  X.Align := TAlignLayout.Right;
+  X.Width := 20;
+  X.Margins.Rect := TRectF.Create(0, (CTabHeight - 20) / 2, 8, (CTabHeight - 20) / 2);
+  X.XRadius := 10;
+  X.YRadius := 10;
+  X.IconSize := 12;
+  X.TagObject := ATab;
+
+  ATab.TitleLabel := NecoNewLabel(Self, B, '', 12.5);
+  ATab.TitleLabel.Align := TAlignLayout.Client;
+  ATab.TitleLabel.Margins.Rect := TRectF.Create(12, 0, 4, 0);
+  ATab.Button := B;
+  ATab.CloseButton := X;
+  UpdateTabTitle(ATab);
+end;
+
+procedure TFormMain.StyleTab(ATab: TNecoTab);
+begin
+  if (ATab = nil) or (ATab.Button = nil) then
+    Exit;
+  if ATab = FActive then
+    ATab.Button.Fill.Color := Palette.Toolbar
+  else if ATab.Button.IsMouseOver then
+    ATab.Button.Fill.Color := Palette.TabHover
+  else
+    ATab.Button.Fill.Color := TAlphaColors.Null;
+  if ATab = FActive then
+    ATab.TitleLabel.TextSettings.FontColor := Palette.Text
+  else
+    ATab.TitleLabel.TextSettings.FontColor := Palette.TextMuted;
+  TNecoIconButton(ATab.CloseButton).Restyle;
+end;
+
+procedure TFormMain.StyleTabs;
+var
+  T: TNecoTab;
+begin
+  for T in FTabs do
+    StyleTab(T);
+end;
+
+procedure TFormMain.UpdateTabTitle(ATab: TNecoTab);
+begin
+  if (ATab = nil) or (ATab.TitleLabel = nil) then
+    Exit;
+  ATab.TitleLabel.Text := ATab.DisplayTitle;
+  ATab.Button.Hint := ATab.DisplayTitle;
+  ATab.Button.ShowHint := True;
+end;
+
+procedure TFormMain.TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+  X, Y: Single);
+var
+  T: TNecoTab;
+begin
+  T := TNecoTab(TFmxObject(Sender).TagObject);
+  if FTabs.IndexOf(T) < 0 then
+    Exit;
+  if Button = TMouseButton.mbLeft then
+  begin
+    if T <> FActive then
+      ActivateTab(T);
+  end
+  else if Button = TMouseButton.mbMiddle then
+    // Fechar libera esta aba (e este retângulo): depois do clique (regra 5.3).
+    TThread.ForceQueue(nil,
+      procedure
+      begin
+        if not FShuttingDown then
+          CloseTab(T);
+      end);
+end;
+
+procedure TFormMain.TabButtonHover(Sender: TObject);
+begin
+  StyleTab(TNecoTab(TFmxObject(Sender).TagObject));
+end;
+
+procedure TFormMain.TabCloseClick(Sender: TObject);
+var
+  T: TNecoTab;
+begin
+  T := TNecoTab(TFmxObject(Sender).TagObject);
+  // O X é filho da aba: liberar aqui dentro derrubaria o botão no meio do próprio clique.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not FShuttingDown then
+        CloseTab(T);
+    end);
+end;
+
+procedure TFormMain.NewTabClick(Sender: TObject);
+begin
+  NewTab(FSettings.HomeUrl);
+end;
+
+procedure TFormMain.MinClick(Sender: TObject);
+begin
+  NecoFrameMinimize(Self);
+end;
+
+procedure TFormMain.MaxClick(Sender: TObject);
+begin
+  // Normalmente o clique no maximizar chega pelo Windows (HTMAXBUTTON). Este caminho
+  // cobre o caso de o FMX receber o clique (ex.: teclado ou acessibilidade).
+  NecoFrameToggleMaximize(Self);
+end;
+
+procedure TFormMain.CloseWindowClick(Sender: TObject);
+begin
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not FShuttingDown then
+        Close;
+    end);
+end;
+
+procedure TFormMain.UpdateMaxButton;
+begin
+  if FBtnMax = nil then
+    Exit;
+  if NecoFrameIsMaximized(Self) then
+  begin
+    FBtnMax.IconData := ICO_JANELA_RESTAURAR;
+    FBtnMax.Hint := 'Restaurar';
+  end
+  else
+  begin
+    FBtnMax.IconData := ICO_JANELA_MAXIMIZAR;
+    FBtnMax.Hint := 'Maximizar';
+  end;
+end;
+
+procedure TFormMain.FormResized(Sender: TObject);
+begin
+  UpdateMaxButton;
 end;
 
 procedure TFormMain.BuildToolbar;
@@ -309,6 +660,12 @@ procedure TFormMain.ApplyTheme;
 begin
   Fill.Kind := TBrushKind.Solid;
   Fill.Color := Palette.Window;
+  FTabStrip.Fill.Color := Palette.Window;
+  FBtnNewTab.Restyle;
+  FBtnMin.Restyle;
+  FBtnMax.Restyle;
+  FBtnClose.Restyle;
+  StyleTabs;
   FToolbar.Fill.Color := Palette.Toolbar;
   FAddressBox.Fill.Color := Palette.Field;
   if FAddress.IsFocused then
@@ -338,8 +695,12 @@ begin
   Result.Engine.SetDarkMode(CurrentTheme = ntDark);
   Result.Engine.SetVisible(False);
   FTabs.Add(Result);
+  BuildTabButton(Result);
+  LayoutTabStrip;
   if AActivate or (FActive = nil) then
-    ActivateTab(Result);
+    ActivateTab(Result)
+  else
+    StyleTab(Result);
   Result.Navigate(AUrl);
 end;
 
@@ -356,6 +717,8 @@ begin
     LayoutEngine;
     ATab.Engine.SetVisible(True);
   end;
+  StyleTabs;
+  FStage.Loading := (ATab <> nil) and ATab.Loading;
   UpdateNavButtons;
   UpdateAddress;
   UpdateProgress;
@@ -366,12 +729,21 @@ end;
 procedure TFormMain.CloseTab(ATab: TNecoTab);
 var
   I: Integer;
+  B: TRectangle;
 begin
   I := FTabs.IndexOf(ATab);
   if I < 0 then
     Exit;
   ATab.Close;
   FTabs.Delete(I);
+  // A aba na faixa (o X e o título são filhos dela e vão junto). Quem chama já está
+  // fora de qualquer evento desses controles (ForceQueue).
+  B := ATab.Button;
+  ATab.Button := nil;
+  ATab.TitleLabel := nil;
+  ATab.CloseButton := nil;
+  B.Free;
+  LayoutTabStrip;
   if FActive = ATab then
   begin
     FActive := nil;
@@ -385,6 +757,9 @@ end;
 
 procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
 begin
+  // O título aparece na faixa para todas as abas, não só a ativa.
+  if AChange = tcTitle then
+    UpdateTabTitle(TNecoTab(Sender));
   if Sender <> FActive then
     Exit;
   case AChange of
@@ -396,6 +771,10 @@ begin
       begin
         UpdateProgress;
         UpdateNavButtons;
+        FStage.Loading := FActive.Loading;
+        // Página carregou com anúncios barrados: a Neco comemora (no máximo 1x por minuto).
+        if not FActive.Loading and (FActive.BlockedCount > 0) then
+          FStage.Celebrate;
       end;
     tcHistory:
       UpdateNavButtons;
