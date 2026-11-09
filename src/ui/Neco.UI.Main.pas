@@ -14,7 +14,7 @@ uses
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
   Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
   Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
-  Neco.UI.BookmarkBar;
+  Neco.UI.BookmarkBar, Neco.UI.History;
 
 type
   TFormMain = class(TForm)
@@ -54,7 +54,7 @@ type
     FBtnShield: TNecoIconButton;
     FShieldBadge: TRectangle;
     FShieldBadgeText: TLabel;
-    FBtnBookmarks, FBtnDownloads, FBtnTheme, FBtnSettings: TNecoIconButton;
+    FBtnBookmarks, FBtnHistory, FBtnDownloads, FBtnTheme, FBtnSettings: TNecoIconButton;
     FBtnStar: TNecoIconButton;
     FBookmarkBar: TNecoBookmarkBar;
     FProgressTrack: TLayout;
@@ -67,6 +67,11 @@ type
     FPanelDownloads: TNecoDownloadsPanel;
     FPanelBookmarks: TNecoBookmarksPanel;
     FPanelSettings: TNecoSettingsPanel;
+    FPanelHistory: TNecoHistoryPanel;
+    // abas fechadas (Ctrl+Shift+T), a mais recente no fim
+    FClosed: TList<string>;
+    // tela cheia: pedida pela página (vídeo) ou pelo F11
+    FFullVideo, FFullKey, FFull: Boolean;
 
     procedure BuildUI;
     procedure BuildTabStrip;
@@ -103,10 +108,21 @@ type
     procedure SaveData;
     function BlockerOn: Boolean;
     function StartUrl: string;
+    function CmdLineUrl: string;
+    /// Reabre as abas da última vez (as de fundo só carregam quando ativadas).
+    function RestoreSession: Boolean;
+    procedure SaveSession;
+    procedure ReopenClosedTab;
+    procedure TabFullScreen(Sender: TObject; AValue: Boolean);
+    procedure ApplyFullScreen;
+    procedure HistoryClick(Sender: TObject);
+    procedure HistoryClear(Sender: TObject);
 
     // abas
     /// AIndex < 0: no fim da faixa.
-    function NewTab(const AUrl: string; AActivate: Boolean = True; AIndex: Integer = -1): TNecoTab;
+    /// ALazy: a aba só carrega a página quando for ativada.
+    function NewTab(const AUrl: string; AActivate: Boolean = True; AIndex: Integer = -1;
+      ALazy: Boolean = False): TNecoTab;
     procedure ActivateTab(ATab: TNecoTab);
     /// Troca de aba pelo teclado: ativa e põe o foco na página.
     procedure SwitchTab(ADelta: Integer);
@@ -196,6 +212,7 @@ var
 begin
   NecoTrace('form criando');
   FTabs := TObjectList<TNecoTab>.Create(False);
+  FClosed := TList<string>.Create;
   LoadData;
   NecoSetTheme(FSettings.Theme);
   NecoSetShown(FSettings.NecoShown);
@@ -224,7 +241,8 @@ begin
   NecoTrace('form visivel');
   // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
   AttachFrame;
-  NewTab(StartUrl);
+  if not RestoreSession then
+    NewTab(StartUrl);
   // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos|config abre o painel.
   P := System.SysUtils.GetEnvironmentVariable('NECO_PAINEL');
   if SameText(P, 'downloads') then
@@ -233,6 +251,8 @@ begin
     ShowPanel(FPanelBookmarks)
   else if SameText(P, 'config') then
     ShowPanel(FPanelSettings);
+  if SameText(P, 'historico') then
+    ShowPanel(FPanelHistory);
   // Teste de memória: NECO_TESTE_ABAS=<n> [NECO_TESTE_CICLOS=<c>] (ver SelfTestTick).
   FSelfTestTabs := StrToIntDef(System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS'), 0);
   if FSelfTestTabs > 0 then
@@ -244,11 +264,12 @@ begin
   end;
 end;
 
-function TFormMain.StartUrl: string;
+function TFormMain.CmdLineUrl: string;
 var
   I: Integer;
 begin
   // NecoBrowser.exe <endereço ou busca>: abre isso no lugar da página inicial.
+  Result := '';
   for I := 1 to ParamCount do
     if not ParamStr(I).StartsWith('-') then
     begin
@@ -256,7 +277,59 @@ begin
       if Result <> '' then
         Exit;
     end;
-  Result := FSettings.HomeUrl;
+end;
+
+function TFormMain.StartUrl: string;
+begin
+  Result := CmdLineUrl;
+  if Result = '' then
+    Result := FSettings.HomeUrl;
+end;
+
+function TFormMain.RestoreSession: Boolean;
+var
+  Urls: TArray<string>;
+  Active, I: Integer;
+begin
+  Result := False;
+  // Endereço na linha de comando e o teste de memória abrem só o que pediram.
+  if not FSettings.RestoreSession or (CmdLineUrl <> '') or
+    (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS') <> '') then
+    Exit;
+  if not FSettings.LoadSession(Urls, Active) or (Length(Urls) = 0) then
+    Exit;
+  for I := 0 to High(Urls) do
+    NewTab(Urls[I], False, -1, True);
+  ActivateTab(FTabs[Min(Active, FTabs.Count - 1)]);
+  NecoTrace(Format('sessao restaurada: %d abas', [Length(Urls)]));
+  Result := True;
+end;
+
+procedure TFormMain.SaveSession;
+var
+  Urls: TArray<string>;
+  T: TNecoTab;
+begin
+  Urls := nil;
+  for T in FTabs do
+    if (T.Url <> '') and not SameText(T.Url, 'about:blank') then
+      Urls := Urls + [T.Url];
+  try
+    FSettings.SaveSession(Urls, Max(0, FTabs.IndexOf(FActive)));
+  except
+    // Falha de disco ao fechar não pode impedir o app de fechar.
+  end;
+end;
+
+procedure TFormMain.ReopenClosedTab;
+var
+  U: string;
+begin
+  if FClosed.Count = 0 then
+    Exit;
+  U := FClosed.Last;
+  FClosed.Delete(FClosed.Count - 1);
+  NewTab(U);
 end;
 
 procedure TFormMain.FormClose(Sender: TObject; var Action: TCloseAction);
@@ -275,6 +348,9 @@ begin
   FProgressTimer.Enabled := False;
   FPanelDownloads.Shutdown;
   FBookmarks.OnChange := nil;
+  if FFull then
+    NecoFrameSetFullScreen(Self, False);
+  SaveSession;
   SaveData;
   // Ordem: fechar cada motor (a janela do form ainda existe), depois o ambiente.
   for T in FTabs do
@@ -285,6 +361,7 @@ begin
   FTabs.Clear;
   NecoEngineShutdown;
   FreeAndNil(FTabs);
+  FreeAndNil(FClosed);
   FreeAndNil(FHistory);
   FreeAndNil(FBookmarks);
   FreeAndNil(FBlocklist);
@@ -836,6 +913,7 @@ begin
   FShieldBadgeText.TextSettings.Font.Style := [TFontStyle.fsBold];
   FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
   FBtnBookmarks := AddToolButton(ICO_MARCADOR, 'Favoritos (Ctrl+Shift+O)', BookmarksClick);
+  FBtnHistory := AddToolButton(ICO_HISTORICO, 'Histórico (Ctrl+H)', HistoryClick);
   FBtnDownloads := AddToolButton(ICO_BAIXAR, 'Downloads (Ctrl+J)', DownloadsClick);
   FBtnTheme := AddToolButton(ICO_SOL, '', ThemeClick);
   FBtnSettings := AddToolButton(ICO_AJUSTES, 'Configurações', SettingsClick);
@@ -910,6 +988,7 @@ begin
   FBtnReload.Restyle;
   UpdateShield;
   FBtnBookmarks.Restyle;
+  FBtnHistory.Restyle;
   FBtnDownloads.Restyle;
   FBtnSettings.Restyle;
   // O botão mostra o tema para onde ele leva.
@@ -929,13 +1008,17 @@ begin
   FPanelDownloads.Restyle;
   FPanelBookmarks.Restyle;
   FPanelSettings.Restyle;
+  FPanelHistory.Restyle;
+  if FPanelHistory.Visible then
+    FPanelHistory.Rebuild; // as linhas pegam a cor na montagem
   FBookmarkBar.Restyle;
   FBookmarkBar.Rebuild; // as estrelas pegam a cor na montagem
 end;
 
 { Abas }
 
-function TFormMain.NewTab(const AUrl: string; AActivate: Boolean; AIndex: Integer): TNecoTab;
+function TFormMain.NewTab(const AUrl: string; AActivate: Boolean; AIndex: Integer;
+  ALazy: Boolean): TNecoTab;
 begin
   Result := TNecoTab.Create(Self, FBlocklist, BlockerOn);
   Result.OnChanged := TabChanged;
@@ -944,6 +1027,9 @@ begin
   Result.OnKey := TabKey;
   Result.OnPageFocus := TabPageFocus;
   Result.OnNavigated := TabNavigated;
+  Result.OnFullScreen := TabFullScreen;
+  if ALazy then
+    Result.SetLazy(AUrl); // antes do botão: o título já sai com o site
   Result.Engine.SetDarkMode(CurrentTheme = ntDark);
   Result.Engine.SetAutofill(FSettings.FormAutofill, FSettings.SavePasswords);
   Result.Engine.SetVisible(False);
@@ -953,18 +1039,27 @@ begin
     FTabs.Add(Result);
   BuildTabButton(Result);
   LayoutTabStrip;
-  if AActivate or (FActive = nil) then
+  if AActivate or ((FActive = nil) and not ALazy) then
     ActivateTab(Result)
   else
     StyleTab(Result);
-  Result.Navigate(AUrl);
+  if not ALazy then
+    Result.Navigate(AUrl);
 end;
 
 procedure TFormMain.ActivateTab(ATab: TNecoTab);
 var
   T: TNecoTab;
 begin
+  // Vídeo em tela cheia é da aba que o pediu: trocar de aba sai dela.
+  if FFullVideo and (ATab <> FActive) then
+  begin
+    FFullVideo := False;
+    ApplyFullScreen;
+  end;
   FActive := ATab;
+  if (ATab <> nil) and ATab.IsLazy then
+    ATab.LoadLazy;
   for T in FTabs do
     if T <> ATab then
       T.Engine.SetVisible(False);
@@ -1017,6 +1112,12 @@ begin
   if I < 0 then
     Exit;
   WasActive := ATab = FActive;
+  if not FShuttingDown and (ATab.Url <> '') and not SameText(ATab.Url, 'about:blank') then
+  begin
+    FClosed.Add(ATab.Url);
+    if FClosed.Count > 25 then
+      FClosed.Delete(0);
+  end;
   if FDragTab = ATab then
   begin
     FDragTab := nil;
@@ -1050,7 +1151,12 @@ procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
 begin
   // O título aparece na faixa para todas as abas, não só a ativa.
   if AChange = tcTitle then
+  begin
     UpdateTabTitle(TNecoTab(Sender));
+    // A visita entra no histórico antes do título chegar: completa aqui.
+    if TNecoTab(Sender).Title <> '' then
+      FHistory.UpdateTitle(TNecoTab(Sender).Url, TNecoTab(Sender).Title);
+  end;
   if Sender <> FActive then
     Exit;
   case AChange of
@@ -1129,6 +1235,54 @@ end;
 procedure TFormMain.TabNavigated(Sender: TObject; const AUrl: string);
 begin
   FHistory.Add(AUrl, TNecoTab(Sender).Title);
+  // Painel aberto: a visita nova aparece (as linhas não têm nada do motor).
+  if FPanelHistory.Visible then
+    FPanelHistory.Rebuild;
+end;
+
+procedure TFormMain.TabFullScreen(Sender: TObject; AValue: Boolean);
+begin
+  // Vem de dentro do callback do motor: a troca de janela roda depois.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown or (Sender <> FActive) then
+        Exit;
+      FFullVideo := AValue;
+      ApplyFullScreen;
+    end);
+end;
+
+procedure TFormMain.ApplyFullScreen;
+var
+  Full: Boolean;
+begin
+  Full := FFullVideo or FFullKey;
+  if Full = FFull then
+    Exit;
+  FFull := Full;
+  NecoTrace('tela cheia ' + BoolToStr(Full, True));
+  if Full then
+    ShowPanel(nil);
+  // Só a página: sem abas, endereço, favoritos e progresso. Align=Top: repõe a ordem.
+  BeginUpdate;
+  try
+    FTabStrip.Visible := not Full;
+    FToolbar.Visible := not Full;
+    FBookmarkBar.Visible := not Full and FSettings.ShowBookmarkBar;
+    FProgressTrack.Visible := not Full;
+    FTabStrip.Position.Y := 0;
+    FToolbar.Position.Y := FTabStrip.Height;
+    FBookmarkBar.Position.Y := FToolbar.Position.Y + FToolbar.Height;
+    FProgressTrack.Position.Y := FBookmarkBar.Position.Y + FBookmarkBar.Height + 1;
+  finally
+    EndUpdate;
+  end;
+  NecoFrameSetFullScreen(Self, Full);
+  Realign;
+  LayoutEngine;
+  if FActive <> nil then
+    FActive.Engine.Focus;
 end;
 
 { Estado da tela }
@@ -1365,6 +1519,14 @@ begin
   FPanelSettings.Visible := False;
   FPanelSettings.OnCloseRequest := PanelCloseRequest;
   FPanelSettings.OnChanged := SettingsChanged;
+
+  FPanelHistory := TNecoHistoryPanel.Create(Self);
+  FPanelHistory.Parent := FBody;
+  FPanelHistory.Visible := False;
+  FPanelHistory.OnCloseRequest := PanelCloseRequest;
+  FPanelHistory.History := FHistory;
+  FPanelHistory.OnOpen := BookmarkOpen;
+  FPanelHistory.OnClear := HistoryClear;
 end;
 
 procedure TFormMain.ShowPanel(APanel: TNecoSidePanel);
@@ -1373,6 +1535,9 @@ begin
   FPanelDownloads.Visible := APanel = FPanelDownloads;
   FPanelBookmarks.Visible := APanel = FPanelBookmarks;
   FPanelSettings.Visible := APanel = FPanelSettings;
+  if (APanel = FPanelHistory) and not FPanelHistory.Visible then
+    FPanelHistory.Rebuild;
+  FPanelHistory.Visible := APanel = FPanelHistory;
   UpdatePanelButtons;
 end;
 
@@ -1403,11 +1568,36 @@ begin
   Mark(FBtnBookmarks, FPanelBookmarks.Visible);
   Mark(FBtnDownloads, FPanelDownloads.Visible);
   Mark(FBtnSettings, FPanelSettings.Visible);
+  Mark(FBtnHistory, FPanelHistory.Visible);
 end;
 
 procedure TFormMain.BookmarksClick(Sender: TObject);
 begin
   TogglePanel(FPanelBookmarks);
+end;
+
+procedure TFormMain.HistoryClick(Sender: TObject);
+begin
+  TogglePanel(FPanelHistory);
+end;
+
+procedure TFormMain.HistoryClear(Sender: TObject);
+begin
+  // Vem do clique na lixeira do painel; o Rebuild não libera o cabeçalho, mas o
+  // padrão é o mesmo dos outros painéis: depois do evento.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown then
+        Exit;
+      FHistory.Clear;
+      try
+        FHistory.SaveToFile(FSettings.HistoryFile);
+      except
+      end;
+      FPanelHistory.Rebuild;
+      FStage.Perform('flip');
+    end);
 end;
 
 procedure TFormMain.DownloadsClick(Sender: TObject);
@@ -1749,6 +1939,23 @@ begin
   M := AShift * [ssCtrl, ssAlt, ssShift];
   if (M = [ssCtrl]) and (AKey = vkL) then
     Acao := FocusAddress
+  else if (M = [ssCtrl, ssShift]) and (AKey = vkT) then
+    Acao := ReopenClosedTab
+  else if (M = [ssCtrl]) and (AKey = vkH) then
+    Acao := procedure
+      begin
+        TogglePanel(FPanelHistory);
+        if FPanelHistory.Visible then
+          FPanelHistory.FocusSearch;
+      end
+  else if (M = []) and (AKey = vkF11) then
+    Acao := procedure
+      begin
+        // F11 sai de qualquer tela cheia, inclusive a do vídeo.
+        FFullKey := not FFull;
+        FFullVideo := False;
+        ApplyFullScreen;
+      end
   else if (M = [ssCtrl]) and (AKey = vkT) then
     Acao := procedure
       begin

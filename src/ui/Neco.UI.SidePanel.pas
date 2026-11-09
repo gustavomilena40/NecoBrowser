@@ -37,6 +37,8 @@ type
     procedure CloseClick(Sender: TObject);
     procedure UpdateEmpty;
     procedure LayoutHeaderButtons;
+    function GetEmptyText: string;
+    procedure SetEmptyText(const AValue: string);
   protected
     /// Botão no cabeçalho, à esquerda do X.
     function AddHeaderButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
@@ -48,6 +50,8 @@ type
     function RowCount: Integer;
     function Row(AIndex: Integer): TControl;
     property List: TVertScrollBox read FList;
+    /// Texto do estado vazio (ex.: busca sem resultado).
+    property EmptyText: string read GetEmptyText write SetEmptyText;
   public
     constructor CreatePanel(AOwner: TComponent; const ATitle, AEmptyText, AEmptyAnim: string);
     destructor Destroy; override;
@@ -217,6 +221,16 @@ end;
 function TNecoSidePanel.Row(AIndex: Integer): TControl;
 begin
   Result := FRows[AIndex];
+end;
+
+function TNecoSidePanel.GetEmptyText: string;
+begin
+  Result := FEmptyText.Text;
+end;
+
+procedure TNecoSidePanel.SetEmptyText(const AValue: string);
+begin
+  FEmptyText.Text := AValue;
 end;
 
 procedure TNecoSidePanel.UpdateEmpty;

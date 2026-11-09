@@ -23,6 +23,7 @@ uses
   Neco.UI.Settings in 'src\ui\Neco.UI.Settings.pas',
   Neco.UI.ErrorView in 'src\ui\Neco.UI.ErrorView.pas',
   Neco.UI.BookmarkBar in 'src\ui\Neco.UI.BookmarkBar.pas',
+  Neco.UI.History in 'src\ui\Neco.UI.History.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}

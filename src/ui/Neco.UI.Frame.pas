@@ -42,6 +42,8 @@ function NecoFrameIsMinimized(AForm: TCommonCustomForm): Boolean;
 function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
 /// Milissegundos desde a última tecla ou movimento de mouse no sistema todo.
 function NecoSystemIdleMs: Cardinal;
+/// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
+procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
 /// Abre o arquivo com o programa padrão do sistema.
 procedure NecoShellOpen(const APath: string);
 /// Abre a pasta do arquivo, com ele selecionado.
@@ -51,7 +53,7 @@ implementation
 
 {$IFDEF MSWINDOWS}
 uses
-  Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Winapi.ShellAPI, FMX.Platform.Win,
+  Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Winapi.ShellAPI, Winapi.MultiMon, FMX.Platform.Win,
   Neco.Core.Trace;
 
 var
@@ -63,6 +65,10 @@ var
   GMaxClick: TProc;
   GMaxHot: Boolean;
   GTracking: Boolean;
+  GFull: Boolean;
+  GSavedStyle: NativeInt;
+  GSavedRect: TRect;
+  GSavedMax: Boolean;
 
 /// Espessura da borda de redimensionar, em pixels físicos, na DPI da janela.
 function FrameThickness(AWnd: HWND): Integer;
@@ -132,7 +138,9 @@ var
 begin
   case uMsg of
     WM_NCCALCSIZE:
-      if wParam <> 0 then
+      if (wParam <> 0) and GFull then
+        Exit(0) // tela cheia: a janela inteira é área cliente
+      else if wParam <> 0 then
       begin
         // O padrão encolhe os quatro lados; devolvemos o topo (sem barra de título).
         // Maximizada, a janela passa da tela pela espessura da borda: desconta no topo.
@@ -146,6 +154,8 @@ begin
       end;
     WM_NCHITTEST:
       begin
+        if GFull then
+          Exit(HTCLIENT); // sem arrastar nem redimensionar
         Result := DefSubclassProc(hWnd, uMsg, wParam, lParam);
         if Result = HTCLIENT then
           Result := TitleHit(hWnd, lParam);
@@ -289,6 +299,41 @@ begin
     Result := 0;
 end;
 
+procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+var
+  W: HWND;
+  MI: TMonitorInfo;
+  R: TRect;
+begin
+  W := FormToHWND(AForm);
+  if (W = 0) or (AOn = GFull) then
+    Exit;
+  if AOn then
+  begin
+    // Como o Chromium: guarda o estado, tira moldura e cobre o monitor.
+    GSavedMax := IsZoomed(W);
+    if GSavedMax then
+      SendMessage(W, WM_SYSCOMMAND, SC_RESTORE, 0);
+    GetWindowRect(W, GSavedRect);
+    GSavedStyle := GetWindowLongPtr(W, GWL_STYLE);
+    GFull := True;
+    SetWindowLongPtr(W, GWL_STYLE, GSavedStyle and not NativeInt(WS_CAPTION or WS_THICKFRAME));
+    MI.cbSize := SizeOf(MI);
+    GetMonitorInfo(MonitorFromWindow(W, MONITOR_DEFAULTTONEAREST), @MI);
+    R := MI.rcMonitor;
+    SetWindowPos(W, HWND_TOP, R.Left, R.Top, R.Width, R.Height, SWP_NOOWNERZORDER or SWP_FRAMECHANGED);
+  end
+  else
+  begin
+    GFull := False;
+    SetWindowLongPtr(W, GWL_STYLE, GSavedStyle);
+    R := GSavedRect;
+    SetWindowPos(W, 0, R.Left, R.Top, R.Width, R.Height, SWP_NOZORDER or SWP_NOOWNERZORDER or SWP_FRAMECHANGED);
+    if GSavedMax then
+      ShowWindow(W, SW_MAXIMIZE);
+  end;
+end;
+
 procedure NecoShellOpen(const APath: string);
 begin
   if APath <> '' then
@@ -338,6 +383,10 @@ end;
 function NecoSystemIdleMs: Cardinal;
 begin
   Result := 0;
+end;
+
+procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+begin
 end;
 
 procedure NecoShellOpen(const APath: string);

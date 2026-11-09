@@ -15,6 +15,7 @@ type
   TNecoTabChange = (tcTitle, tcUrl, tcLoading, tcHistory, tcBlocked, tcError);
   TNecoTabChangeEvent = procedure(Sender: TObject; AChange: TNecoTabChange) of object;
   TNecoTabUrlEvent = procedure(Sender: TObject; const AUrl: string) of object;
+  TNecoTabBoolEvent = procedure(Sender: TObject; AValue: Boolean) of object;
   TNecoTabDownloadEvent = procedure(Sender: TObject; const ADownload: INecoDownload) of object;
   TNecoTabKeyEvent = procedure(Sender: TObject; AKey: Word; AShift: TShiftState;
     var AHandled: Boolean) of object;
@@ -38,6 +39,9 @@ type
     FOnKey: TNecoTabKeyEvent;
     FOnPageFocus: TNotifyEvent;
     FOnNavigated: TNecoTabUrlEvent;
+    FOnFullScreen: TNecoTabBoolEvent;
+    FLazyUrl: string;
+    procedure EngineFullScreen(Sender: TObject; AValue: Boolean);
     procedure Changed(AChange: TNecoTabChange);
     // Sem const: a assinatura tem que bater com TFunc<string, Boolean>.
     function FilterRequest(AUrl: string): Boolean;
@@ -62,6 +66,10 @@ type
       const ABlockerOn: TFunc<Boolean>);
     destructor Destroy; override;
     procedure Navigate(const AUrl: string);
+    /// Aba restaurada que só carrega quando for ativada (como no Chrome).
+    procedure SetLazy(const AUrl: string);
+    function IsLazy: Boolean;
+    procedure LoadLazy;
     /// Fecha o motor. Não chamar de dentro de um evento do próprio motor (regra 5.3):
     /// o form adia com TThread.ForceQueue.
     procedure Close;
@@ -88,12 +96,13 @@ type
     property OnPageFocus: TNotifyEvent read FOnPageFocus write FOnPageFocus;
     /// Navegação principal concluída com sucesso (para o histórico).
     property OnNavigated: TNecoTabUrlEvent read FOnNavigated write FOnNavigated;
+    property OnFullScreen: TNecoTabBoolEvent read FOnFullScreen write FOnFullScreen;
   end;
 
 implementation
 
 uses
-  Neco.Engine.Factory;
+  Neco.Core.Url, Neco.Engine.Factory;
 
 { TNecoTab }
 
@@ -116,6 +125,7 @@ begin
   FEngine.OnAcceleratorKey := EngineKey;
   FEngine.OnGotFocus := EngineFocus;
   FEngine.RequestFilter := FilterRequest;
+  FEngine.OnFullScreen := EngineFullScreen;
 end;
 
 destructor TNecoTab.Destroy;
@@ -135,6 +145,7 @@ begin
   FOnKey := nil;
   FOnPageFocus := nil;
   FOnNavigated := nil;
+  FOnFullScreen := nil;
   if FEngine <> nil then
   begin
     FEngine.Close;   // desliga os eventos e solta o motor nativo
@@ -150,6 +161,35 @@ begin
   if FUrl = '' then
     FUrl := AUrl;
   FEngine.Navigate(AUrl);
+end;
+
+procedure TNecoTab.SetLazy(const AUrl: string);
+begin
+  FLazyUrl := AUrl;
+  FUrl := AUrl;
+  FTitle := NecoExtractHost(AUrl);
+end;
+
+function TNecoTab.IsLazy: Boolean;
+begin
+  Result := FLazyUrl <> '';
+end;
+
+procedure TNecoTab.LoadLazy;
+var
+  U: string;
+begin
+  if FLazyUrl = '' then
+    Exit;
+  U := FLazyUrl;
+  FLazyUrl := '';
+  Navigate(U);
+end;
+
+procedure TNecoTab.EngineFullScreen(Sender: TObject; AValue: Boolean);
+begin
+  if Assigned(FOnFullScreen) then
+    FOnFullScreen(Self, AValue);
 end;
 
 function TNecoTab.DisplayTitle: string;

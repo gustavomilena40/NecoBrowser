@@ -73,7 +73,8 @@ type
     ICoreWebView2DownloadStartingEventHandler,
     ICoreWebView2ProcessFailedEventHandler,
     ICoreWebView2AcceleratorKeyPressedEventHandler,
-    ICoreWebView2FocusChangedEventHandler)
+    ICoreWebView2FocusChangedEventHandler,
+    ICoreWebView2ContainsFullScreenElementChangedEventHandler)
   private
     FEngine: TNecoWV2Engine;
     function ControllerCompleted(errorCode: HResult; const AController: ICoreWebView2Controller): HResult; stdcall;
@@ -96,6 +97,7 @@ type
     function AcceleratorKeyPressed(const sender: ICoreWebView2Controller;
       const args: ICoreWebView2AcceleratorKeyPressedEventArgs): HResult; stdcall;
     function GotFocus(const sender: ICoreWebView2Controller; const args: IUnknown): HResult; stdcall;
+    function FullScreenChanged(const sender: ICoreWebView2; const args: IUnknown): HResult; stdcall;
 
     function ICoreWebView2CreateCoreWebView2ControllerCompletedHandler.Invoke = ControllerCompleted;
     function ICoreWebView2NavigationStartingEventHandler.Invoke = NavigationStarting;
@@ -109,6 +111,7 @@ type
     function ICoreWebView2ProcessFailedEventHandler.Invoke = ProcessFailed;
     function ICoreWebView2AcceleratorKeyPressedEventHandler.Invoke = AcceleratorKeyPressed;
     function ICoreWebView2FocusChangedEventHandler.Invoke = GotFocus;
+    function ICoreWebView2ContainsFullScreenElementChangedEventHandler.Invoke = FullScreenChanged;
   public
     constructor Create(AEngine: TNecoWV2Engine);
     procedure Detach;
@@ -122,7 +125,7 @@ type
     FController: ICoreWebView2Controller;
     FWebView: ICoreWebView2;
     FTokNavStart, FTokNavDone, FTokSource, FTokHistory, FTokTitle, FTokNewWindow,
-    FTokResource, FTokDownload, FTokProcess, FTokAccel, FTokFocus: EventRegistrationToken;
+    FTokResource, FTokDownload, FTokProcess, FTokAccel, FTokFocus, FTokFull: EventRegistrationToken;
     FHasDownloadToken: Boolean;
     FPendingUrl: string;
     FBounds: TRect;
@@ -807,6 +810,26 @@ begin
   end;
 end;
 
+function TNecoWV2Sink.FullScreenChanged(const sender: ICoreWebView2; const args: IUnknown): HResult;
+var
+  E: TNecoWV2Engine;
+  Keep: IInterface;
+  V: Integer;
+begin
+  Result := S_OK;
+  E := FEngine;
+  if (E = nil) or (E.FWebView = nil) then
+    Exit;
+  Keep := E;
+  try
+    if Failed(E.FWebView.Get_ContainsFullScreenElement(V)) then
+      V := 0;
+    if Assigned(E.FOnFullScreen) then
+      E.FOnFullScreen(E, V <> 0);
+  except
+  end;
+end;
+
 { TNecoWV2Engine }
 
 constructor TNecoWV2Engine.Create(AParentWnd: HWND);
@@ -901,6 +924,7 @@ begin
   FWebView.add_DocumentTitleChanged(FSink, FTokTitle);
   FWebView.add_NewWindowRequested(FSink, FTokNewWindow);
   FWebView.add_ProcessFailed(FSink, FTokProcess);
+  FWebView.add_ContainsFullScreenElementChanged(FSink, FTokFull);
   FWebView.AddWebResourceRequestedFilter('*', COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
   FWebView.add_WebResourceRequested(FSink, FTokResource);
   if Supports(FWebView, ICoreWebView2_4, W4) then
@@ -1146,6 +1170,7 @@ begin
     FWebView.remove_DocumentTitleChanged(FTokTitle);
     FWebView.remove_NewWindowRequested(FTokNewWindow);
     FWebView.remove_ProcessFailed(FTokProcess);
+    FWebView.remove_ContainsFullScreenElementChanged(FTokFull);
     FWebView.remove_WebResourceRequested(FTokResource);
     if FHasDownloadToken and Supports(FWebView, ICoreWebView2_4, W4) then
       W4.remove_DownloadStarting(FTokDownload);
