@@ -194,10 +194,12 @@ uses
   System.SysUtils;
 
 const
+  // Escuro um pouco mais claro que o original (pedido do usuário em 2026-11-09):
+  // cada tom subiu ~8 a 10 pontos, mantendo o contraste entre as camadas.
   CDark: TNecoPalette = (
-    Window: $FF1E1F22; Toolbar: $FF2B2D31; TabHover: $FF35373C; Field: $FF1E1F22;
-    FieldBorder: $FF3A3C42; Focus: $FF5B8DEF; Text: $FFE6E6E6; TextMuted: $FF9AA0A6;
-    Hover: $FF3A3C42; Pressed: $FF4A4C52; Panel: $FF232428; Divider: $FF3A3C42;
+    Window: $FF27282C; Toolbar: $FF35373B; TabHover: $FF3F4146; Field: $FF27282C;
+    FieldBorder: $FF45474D; Focus: $FF5B8DEF; Text: $FFE8E8E8; TextMuted: $FFA0A6AC;
+    Hover: $FF45474D; Pressed: $FF55575D; Panel: $FF2D2E32; Divider: $FF45474D;
     Accent: $FF5B8DEF; Star: $FFF5C542; Shield: $FF3DDC84; Danger: $FFF2545B);
   CLight: TNecoPalette = (
     Window: $FFDEE1E6; Toolbar: $FFFFFFFF; TabHover: $FFE8EAED; Field: $FFF1F3F4;

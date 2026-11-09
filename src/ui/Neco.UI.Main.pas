@@ -38,6 +38,10 @@ type
     FBtnNewTab: TNecoIconButton;
     FBtnMin, FBtnMax, FBtnClose: TNecoIconButton;
     FStage: TNecoStage;
+    // arrastar aba para mudar a posição
+    FDragTab: TNecoTab;
+    FDragging: Boolean;
+    FDragStartX, FDragGrabX, FTabW: Single;
 
     // tela
     FToolbar: TRectangle;
@@ -81,6 +85,10 @@ type
     procedure TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
       X, Y: Single);
     procedure TabButtonHover(Sender: TObject);
+    procedure TabButtonMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+    procedure TabButtonMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+      X, Y: Single);
+    function StripX(ASender: TObject; X, Y: Single): Single;
     procedure TabCloseClick(Sender: TObject);
     procedure NewTabClick(Sender: TObject);
     procedure MinClick(Sender: TObject);
@@ -517,11 +525,16 @@ begin
   TabW := CTabMaxWidth;
   if FTabs.Count > 0 then
     TabW := Max(CTabMinWidth, Min(CTabMaxWidth, Avail / FTabs.Count));
+  FTabW := TabW;
   X := 8;
   for T in FTabs do
     if T.Button <> nil then
     begin
-      T.Button.SetBounds(X, CTabTop, TabW, CTabHeight);
+      // A aba arrastada segue o mouse; as outras vão para as vagas.
+      if FDragging and (T = FDragTab) then
+        T.Button.SetBounds(T.Button.Position.X, CTabTop, TabW, CTabHeight)
+      else
+        T.Button.SetBounds(X, CTabTop, TabW, CTabHeight);
       X := X + TabW;
     end;
   FBtnNewTab.SetBounds(X + 6, CTabTop + (CTabHeight - FBtnNewTab.Height) / 2,
@@ -559,6 +572,8 @@ begin
   B.HitTest := True;
   B.TagObject := ATab;
   B.OnMouseDown := TabButtonMouseDown;
+  B.OnMouseMove := TabButtonMouseMove;
+  B.OnMouseUp := TabButtonMouseUp;
   B.OnMouseEnter := TabButtonHover;
   B.OnMouseLeave := TabButtonHover;
   B.Height := CTabHeight;
@@ -627,6 +642,11 @@ begin
   begin
     if T <> FActive then
       ActivateTab(T);
+    // Pode virar arrasto (TabButtonMouseMove) se o mouse andar mais que uns pixels.
+    FDragTab := T;
+    FDragging := False;
+    FDragStartX := StripX(Sender, X, Y);
+    FDragGrabX := FDragStartX - T.Button.Position.X;
   end
   else if Button = TMouseButton.mbMiddle then
     // Fechar libera esta aba (e este retângulo): depois do clique (regra 5.3).
@@ -636,6 +656,56 @@ begin
         if not FShuttingDown then
           CloseTab(T);
       end);
+end;
+
+function TFormMain.StripX(ASender: TObject; X, Y: Single): Single;
+begin
+  Result := FTabStrip.AbsoluteToLocal(TControl(ASender).LocalToAbsolute(TPointF.Create(X, Y))).X;
+end;
+
+procedure TFormMain.TabButtonMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+var
+  B: TRectangle;
+  P, NewX, MaxX: Single;
+  Cur, Idx: Integer;
+begin
+  if (FDragTab = nil) or (Sender <> FDragTab.Button) or not (ssLeft in Shift) then
+    Exit;
+  B := FDragTab.Button;
+  P := StripX(Sender, X, Y);
+  if not FDragging then
+  begin
+    if Abs(P - FDragStartX) < 6 then
+      Exit; // clique comum, não arrasto
+    FDragging := True;
+    B.BringToFront;
+    FStage.BringToFront;
+  end;
+  // Segue o mouse, presa entre a primeira e a última vaga.
+  MaxX := 8 + (FTabs.Count - 1) * FTabW;
+  NewX := Max(8, Min(MaxX, P - FDragGrabX));
+  B.Position.X := NewX;
+  // Passou do meio da vaga vizinha: troca de lugar na lista.
+  Cur := FTabs.IndexOf(FDragTab);
+  Idx := EnsureRange(Round((NewX - 8) / FTabW), 0, FTabs.Count - 1);
+  if Idx <> Cur then
+  begin
+    FTabs.Move(Cur, Idx);
+    LayoutTabStrip;
+  end;
+end;
+
+procedure TFormMain.TabButtonMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+  X, Y: Single);
+begin
+  if Button <> TMouseButton.mbLeft then
+    Exit;
+  FDragTab := nil;
+  if FDragging then
+  begin
+    FDragging := False;
+    LayoutTabStrip; // encaixa na vaga
+  end;
 end;
 
 procedure TFormMain.TabButtonHover(Sender: TObject);
@@ -929,6 +999,11 @@ begin
   if I < 0 then
     Exit;
   WasActive := ATab = FActive;
+  if FDragTab = ATab then
+  begin
+    FDragTab := nil;
+    FDragging := False;
+  end;
   ATab.Close;
   FTabs.Delete(I);
   // A aba na faixa (o X e o título são filhos dela e vão junto). Quem chama já está
