@@ -6,7 +6,9 @@
 interface
 
 type
-  TNecoSearchEngine = (seDuckDuckGo, seGoogle);
+  /// Ordem fixa (o valor vai para o settings.json pelo id, não pelo número).
+  /// seDuckDuckGoHtml: a versão sem JavaScript, leve e rápida.
+  TNecoSearchEngine = (seDuckDuckGo, seGoogle, seDuckDuckGoHtml);
 
 /// Converte o que o usuário digitou numa URL navegável.
 /// Endereço (com ou sem esquema) vira URL; o resto vira busca. Texto vazio devolve ''.
@@ -198,6 +200,8 @@ begin
   case AEngine of
     seGoogle:
       Result := 'https://www.google.com/search?q=' + NecoUrlEncode(AQuery);
+    seDuckDuckGoHtml:
+      Result := 'https://html.duckduckgo.com/html/?q=' + NecoUrlEncode(AQuery);
   else
     Result := 'https://duckduckgo.com/?q=' + NecoUrlEncode(AQuery);
   end;
@@ -228,6 +232,8 @@ begin
   case AEngine of
     seGoogle:
       Result := 'google';
+    seDuckDuckGoHtml:
+      Result := 'duckduckgo-html';
   else
     Result := 'duckduckgo';
   end;
@@ -238,6 +244,8 @@ begin
   // Padrão (valor ausente ou desconhecido): Google.
   if SameText(AId, 'duckduckgo') then
     Result := seDuckDuckGo
+  else if SameText(AId, 'duckduckgo-html') then
+    Result := seDuckDuckGoHtml
   else
     Result := seGoogle;
 end;

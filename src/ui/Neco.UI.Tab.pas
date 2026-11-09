@@ -27,6 +27,8 @@ type
     FLoading: Boolean;
     FBlocked: Integer;
     FError: string;
+    FNavError: TNecoNavError;
+    FAttemptUrl: string;
     FClosed: Boolean;
     FBlocklist: TNecoBlocklist;
     FBlockerOn: TFunc<Boolean>;
@@ -43,7 +45,7 @@ type
     procedure EngineReady(Sender: TObject);
     procedure EngineError(Sender: TObject; const AMessage: string);
     procedure EngineNavStarting(Sender: TObject; const AUrl: string; var ACancel: Boolean);
-    procedure EngineNavCompleted(Sender: TObject; ASuccess: Boolean);
+    procedure EngineNavCompleted(Sender: TObject; ASuccess: Boolean; AError: TNecoNavError);
     procedure EngineTitle(Sender: TObject);
     procedure EngineUrl(Sender: TObject; const AUrl: string);
     procedure EngineHistory(Sender: TObject);
@@ -64,12 +66,21 @@ type
     /// o form adia com TThread.ForceQueue.
     procedure Close;
     function DisplayTitle: string;
+    /// A página da aba é a página de erro do NecoBrowser (o form esconde o motor).
+    function HasErrorPage: Boolean;
+    /// Tenta de novo o endereço que falhou.
+    procedure Retry;
     property Engine: INecoEngine read FEngine;
     property Title: string read FTitle;
     property Url: string read FUrl;
     property Loading: Boolean read FLoading;
     property BlockedCount: Integer read FBlocked;
+    /// Falha do próprio motor (ex.: WebView2 ausente). Vazio = sem falha.
     property Error: string read FError;
+    /// Falha da última navegação principal que vira página de erro (neNone = nenhuma).
+    property NavError: TNecoNavError read FNavError;
+    /// Endereço da última navegação principal pedida (o que falhou, se NavError <> neNone).
+    property AttemptUrl: string read FAttemptUrl;
     property OnChanged: TNecoTabChangeEvent read FOnChanged write FOnChanged;
     property OnNewWindow: TNecoTabUrlEvent read FOnNewWindow write FOnNewWindow;
     property OnDownload: TNecoTabDownloadEvent read FOnDownload write FOnDownload;
@@ -152,6 +163,19 @@ begin
     Result := 'Nova aba';
 end;
 
+function TNecoTab.HasErrorPage: Boolean;
+begin
+  Result := (FNavError <> neNone) or (FError <> '');
+end;
+
+procedure TNecoTab.Retry;
+begin
+  if FAttemptUrl <> '' then
+    Navigate(FAttemptUrl)
+  else if FEngine <> nil then
+    FEngine.Reload;
+end;
+
 procedure TNecoTab.Changed(AChange: TNecoTabChange);
 begin
   if Assigned(FOnChanged) then
@@ -182,15 +206,22 @@ begin
 end;
 
 procedure TNecoTab.EngineNavStarting(Sender: TObject; const AUrl: string; var ACancel: Boolean);
+var
+  HadError: Boolean;
 begin
+  HadError := (FNavError <> neNone) or (FError <> '');
+  FNavError := neNone;
+  FAttemptUrl := AUrl;
   FError := '';
   FLoading := True;
   FBlocked := 0; // o contador é da página atual
   Changed(tcLoading);
   Changed(tcBlocked);
+  if HadError then
+    Changed(tcError); // some a página de erro
 end;
 
-procedure TNecoTab.EngineNavCompleted(Sender: TObject; ASuccess: Boolean);
+procedure TNecoTab.EngineNavCompleted(Sender: TObject; ASuccess: Boolean; AError: TNecoNavError);
 begin
   FLoading := False;
   FTitle := FEngine.GetTitle;
@@ -199,6 +230,13 @@ begin
   Changed(tcTitle);
   if ASuccess and Assigned(FOnNavigated) then
     FOnNavigated(Self, FUrl);
+  // Só estes viram a página de erro com a Neco; certificado e o resto ficam com a
+  // página do próprio motor (que oferece o que fazer).
+  if not ASuccess and (AError in [neNotFound, neOffline, neTimeout, neRefused]) then
+  begin
+    FNavError := AError;
+    Changed(tcError);
+  end;
 end;
 
 procedure TNecoTab.EngineTitle(Sender: TObject);

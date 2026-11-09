@@ -55,6 +55,8 @@ begin
   CheckEq(NecoInputToUrl('clima são paulo', seGoogle),
     'https://www.google.com/search?q=clima+s%C3%A3o+paulo', 'busca no Google');
   CheckEq(NecoInputToUrl('delphi', D), 'https://duckduckgo.com/?q=delphi', 'palavra sozinha');
+  CheckEq(NecoInputToUrl('clima são paulo', seDuckDuckGoHtml),
+    'https://html.duckduckgo.com/html/?q=clima+s%C3%A3o+paulo', 'busca no DuckDuckGo HTML');
   CheckEq(NecoInputToUrl('1.5', D), 'https://duckduckgo.com/?q=1.5', 'numero decimal');
   CheckEq(NecoInputToUrl('c++ & c#', D), 'https://duckduckgo.com/?q=c%2B%2B+%26+c%23', 'simbolos');
   CheckEq(NecoInputToUrl('versão.final', D), 'https://versão.final', 'dominio com acento (IDN)');
@@ -186,12 +188,17 @@ begin
       (S.HomeUrl = 'https://www.google.com/'), 'padroes (Google)');
     Check(NecoSearchEngineFromId('') = seGoogle, 'motor ausente no JSON vira Google');
     Check(NecoSearchEngineFromId('duckduckgo') = seDuckDuckGo, 'duckduckgo continua aceito');
+    Check(NecoSearchEngineFromId(NecoSearchEngineId(seDuckDuckGoHtml)) = seDuckDuckGoHtml,
+      'id do DuckDuckGo HTML vai e volta');
+    Check(S.NecoShown, 'Neco ligada por padrao');
     S.SearchEngine := seDuckDuckGo;
     S.Theme := ntLight;
     S.BlockerEnabled := False;
+    S.NecoShown := False;
     S.Save;
     S2.Load;
-    Check((S2.SearchEngine = seDuckDuckGo) and (S2.Theme = ntLight) and not S2.BlockerEnabled, 'ida e volta');
+    Check((S2.SearchEngine = seDuckDuckGo) and (S2.Theme = ntLight) and not S2.BlockerEnabled and
+      not S2.NecoShown, 'ida e volta');
   finally
     S.Free;
     S2.Free;

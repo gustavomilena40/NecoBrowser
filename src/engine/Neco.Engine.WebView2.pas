@@ -120,6 +120,8 @@ type
     FReady: Boolean;
     FClosed: Boolean;
     FLoading: Boolean;
+    /// A navegação em curso virou download (a falha dela não é erro de página).
+    FNavDownload: Boolean;
     /// URL da navegação principal em curso: o bloqueador nunca barra este documento.
     FMainNavUrl: string;
     // diagnóstico (NECO_TRACE)
@@ -223,6 +225,28 @@ end;
 function HrText(AHr: HResult): string;
 begin
   Result := Format('0x%.8x', [Cardinal(AHr)]);
+end;
+
+function NavErrorOf(AStatus: COREWEBVIEW2_WEB_ERROR_STATUS): TNecoNavError;
+begin
+  case AStatus of
+    COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED:
+      Result := neNotFound;
+    COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED:
+      Result := neOffline;
+    COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT:
+      Result := neTimeout;
+    COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE, COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT,
+    COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET, COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED:
+      Result := neRefused;
+    COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_COMMON_NAME_IS_INCORRECT..
+    COREWEBVIEW2_WEB_ERROR_STATUS_CERTIFICATE_IS_INVALID:
+      Result := neCertificate;
+    COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED:
+      Result := neCanceled;
+  else
+    Result := neOther;
+  end;
 end;
 
 function NecoParentSubclass(hWnd: HWND; uMsg: UINT; wParam: WPARAM; lParam: LPARAM;
@@ -389,6 +413,7 @@ begin
     if Succeeded(args.Get_uri(P)) then
       Url := TakeStr(P);
     E.FMainNavUrl := Url;
+    E.FNavDownload := False;
     E.FNavStartMs := NecoTraceMs;
     E.FResCount := 0;
     E.FResBlocked := 0;
@@ -413,6 +438,8 @@ var
   E: TNecoWV2Engine;
   Keep: IInterface;
   Ok: Integer;
+  St: COREWEBVIEW2_WEB_ERROR_STATUS;
+  Err: TNecoNavError;
 begin
   Result := S_OK;
   E := FEngine;
@@ -423,11 +450,21 @@ begin
     E.FLoading := False;
     if Failed(args.Get_IsSuccess(Ok)) then
       Ok := 0;
+    Err := neNone;
+    if Ok = 0 then
+    begin
+      if Failed(args.Get_WebErrorStatus(St)) then
+        St := COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+      if E.FNavDownload then
+        Err := neCanceled
+      else
+        Err := NavErrorOf(St);
+    end;
     if NecoTraceOn then
-      NecoTrace(Format('nav fim ok=%d duracao=%.0fms requisicoes_filtradas=%d bloqueadas=%d tempo_no_filtro=%.1fms',
-        [Ok, NecoTraceMs - E.FNavStartMs, E.FResCount, E.FResBlocked, E.FResMs]));
+      NecoTrace(Format('nav fim ok=%d erro=%d duracao=%.0fms requisicoes_filtradas=%d bloqueadas=%d tempo_no_filtro=%.1fms',
+        [Ok, Ord(Err), NecoTraceMs - E.FNavStartMs, E.FResCount, E.FResBlocked, E.FResMs]));
     if Assigned(E.FOnNavigationCompleted) then
-      E.FOnNavigationCompleted(E, Ok <> 0);
+      E.FOnNavigationCompleted(E, Ok <> 0, Err);
   except
   end;
 end;
@@ -575,6 +612,8 @@ begin
     if Succeeded(args.Get_ResultFilePath(P)) then
       Path := TakeStr(P);
     args.Set_Handled(1); // esconde o painel nativo do WebView2; o nosso assume
+    if E.FLoading then
+      E.FNavDownload := True;
     D := TNecoWV2Download.Create(Op, Path);
     E.FOnDownloadStarting(E, D);
   except

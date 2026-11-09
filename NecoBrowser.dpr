@@ -20,6 +20,8 @@ uses
   Neco.UI.SidePanel in 'src\ui\Neco.UI.SidePanel.pas',
   Neco.UI.Downloads in 'src\ui\Neco.UI.Downloads.pas',
   Neco.UI.Bookmarks in 'src\ui\Neco.UI.Bookmarks.pas',
+  Neco.UI.Settings in 'src\ui\Neco.UI.Settings.pas',
+  Neco.UI.ErrorView in 'src\ui\Neco.UI.ErrorView.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}

@@ -19,6 +19,7 @@ type
     FSearchEngine: TNecoSearchEngine;
     FTheme: TNecoTheme;
     FBlockerEnabled: Boolean;
+    FNecoShown: Boolean;
     FHomeUrl: string;
     FCustomDir: Boolean;
     function GetSettingsFile: string;
@@ -43,6 +44,8 @@ type
     property SearchEngine: TNecoSearchEngine read FSearchEngine write FSearchEngine;
     property Theme: TNecoTheme read FTheme write FTheme;
     property BlockerEnabled: Boolean read FBlockerEnabled write FBlockerEnabled;
+    /// Mostrar a Neco-Arc (faixa de abas, painéis, página de erro).
+    property NecoShown: Boolean read FNecoShown write FNecoShown;
     property HomeUrl: string read FHomeUrl write FHomeUrl;
   end;
 
@@ -74,6 +77,7 @@ begin
   FSearchEngine := seGoogle;
   FTheme := ntDark;
   FBlockerEnabled := True;
+  FNecoShown := True;
   FHomeUrl := CDefaultHome;
 end;
 
@@ -115,6 +119,7 @@ begin
     else
       O.AddPair('theme', 'dark');
     O.AddPair('blocker', TJSONBool.Create(FBlockerEnabled));
+    O.AddPair('neco', TJSONBool.Create(FNecoShown));
     O.AddPair('home', FHomeUrl);
     Result := O.Format(2);
   finally
@@ -136,6 +141,7 @@ begin
     else
       FTheme := ntDark;
     FBlockerEnabled := NecoJsonBool(O, 'blocker', True);
+    FNecoShown := NecoJsonBool(O, 'neco', True);
     FHomeUrl := NecoJsonStr(O, 'home', CDefaultHome);
     if FHomeUrl = '' then
       FHomeUrl := CDefaultHome;

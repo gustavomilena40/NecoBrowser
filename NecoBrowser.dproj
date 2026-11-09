@@ -103,6 +103,8 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="src\ui\Neco.UI.SidePanel.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Downloads.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Bookmarks.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Settings.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.ErrorView.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>

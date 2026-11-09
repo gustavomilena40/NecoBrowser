@@ -36,7 +36,13 @@ type
 
   TNecoNavigationStartingEvent = procedure(Sender: TObject; const AUrl: string;
     var ACancel: Boolean) of object;
-  TNecoNavigationCompletedEvent = procedure(Sender: TObject; ASuccess: Boolean) of object;
+  /// Por que a navegação principal falhou (neNone = deu certo).
+  /// neCanceled: parada pelo usuário, trocada por outra navegação ou virou download.
+  /// neCertificate e neOther: o motor mostra a própria página (ex.: "continuar mesmo assim").
+  TNecoNavError = (neNone, neNotFound, neOffline, neTimeout, neRefused, neCertificate,
+    neCanceled, neOther);
+  TNecoNavigationCompletedEvent = procedure(Sender: TObject; ASuccess: Boolean;
+    AError: TNecoNavError) of object;
   TNecoUrlEvent = procedure(Sender: TObject; const AUrl: string) of object;
   TNecoErrorEvent = procedure(Sender: TObject; const AMessage: string) of object;
   TNecoDownloadStartingEvent = procedure(Sender: TObject; const ADownload: INecoDownload) of object;

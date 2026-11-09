@@ -13,7 +13,7 @@ uses
   FMX.Edit,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
   Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
-  Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks;
+  Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView;
 
 type
   TFormMain = class(TForm)
@@ -46,17 +46,18 @@ type
     FBtnShield: TNecoIconButton;
     FShieldBadge: TRectangle;
     FShieldBadgeText: TLabel;
-    FBtnBookmarks, FBtnDownloads: TNecoIconButton;
+    FBtnBookmarks, FBtnDownloads, FBtnTheme, FBtnSettings: TNecoIconButton;
     FBtnStar: TNecoIconButton;
     FProgressTrack: TLayout;
     FProgress: TRectangle;
     FProgressTimer: TTimer;
     FBody: TLayout;
     FPageArea: TLayout;
-    FPageMessage: TLabel;
+    FErrorView: TNecoErrorView;
     // painéis laterais (um aberto por vez)
     FPanelDownloads: TNecoDownloadsPanel;
     FPanelBookmarks: TNecoBookmarksPanel;
+    FPanelSettings: TNecoSettingsPanel;
 
     procedure BuildUI;
     procedure BuildTabStrip;
@@ -141,6 +142,13 @@ type
     procedure BookmarksChanged(Sender: TObject);
     procedure BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
     procedure BookmarkDelete(Sender: TObject; const AUrl: string);
+    // tema, configurações e página de erro
+    procedure ThemeClick(Sender: TObject);
+    procedure SettingsClick(Sender: TObject);
+    procedure SettingsChanged(Sender: TObject; AChange: TNecoSettingsChange);
+    procedure SetTheme(ATheme: TNecoTheme);
+    procedure SaveSettings;
+    procedure ErrorRetry(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
   protected
@@ -170,6 +178,7 @@ begin
   FTabs := TObjectList<TNecoTab>.Create(False);
   LoadData;
   NecoSetTheme(FSettings.Theme);
+  NecoSetShown(FSettings.NecoShown);
 
   Cfg.WebDataDir := FSettings.WebDataDir;
   Cfg.DownloadsDir := FSettings.DownloadsDir;
@@ -196,12 +205,14 @@ begin
   // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
   AttachFrame;
   NewTab(StartUrl);
-  // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos abre o painel.
+  // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos|config abre o painel.
   P := System.SysUtils.GetEnvironmentVariable('NECO_PAINEL');
   if SameText(P, 'downloads') then
     ShowPanel(FPanelDownloads)
   else if SameText(P, 'favoritos') then
-    ShowPanel(FPanelBookmarks);
+    ShowPanel(FPanelBookmarks)
+  else if SameText(P, 'config') then
+    ShowPanel(FPanelSettings);
 end;
 
 function TFormMain.StartUrl: string;
@@ -330,13 +341,12 @@ begin
   FPageArea.Align := TAlignLayout.Client;
   FPageArea.OnResized := PageAreaResized;
 
-  FPageMessage := NecoNewLabel(Self, FPageArea, '', 15);
-  FPageMessage.Align := TAlignLayout.Center;
-  FPageMessage.Width := 640;
-  FPageMessage.Height := 120;
-  FPageMessage.TextSettings.WordWrap := True;
-  FPageMessage.TextSettings.HorzAlign := TTextAlign.Center;
-  FPageMessage.Visible := False;
+  // Página de erro: cobre a área da página (o motor fica escondido enquanto ela aparece).
+  FErrorView := TNecoErrorView.Create(Self);
+  FErrorView.Parent := FPageArea;
+  FErrorView.Align := TAlignLayout.Contents;
+  FErrorView.Visible := False;
+  FErrorView.OnRetry := ErrorRetry;
 
   BuildPanels;
 end;
@@ -691,6 +701,8 @@ begin
   FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
   FBtnBookmarks := AddToolButton(ICO_MARCADOR, 'Favoritos (Ctrl+Shift+O)', BookmarksClick);
   FBtnDownloads := AddToolButton(ICO_BAIXAR, 'Downloads (Ctrl+J)', DownloadsClick);
+  FBtnTheme := AddToolButton(ICO_SOL, '', ThemeClick);
+  FBtnSettings := AddToolButton(ICO_AJUSTES, 'Configurações', SettingsClick);
 
   FAddressBox := TRectangle.Create(Self);
   FAddressBox.Parent := FToolbar;
@@ -756,17 +768,31 @@ begin
   FAddressIcon.Stroke.Color := Palette.TextMuted;
   FAddress.TextSettings.FontColor := Palette.Text;
   FProgress.Fill.Color := Palette.Accent;
-  FPageMessage.TextSettings.FontColor := Palette.TextMuted;
+  FErrorView.Restyle;
   FBtnBack.Restyle;
   FBtnForward.Restyle;
   FBtnReload.Restyle;
   UpdateShield;
   FBtnBookmarks.Restyle;
   FBtnDownloads.Restyle;
+  FBtnSettings.Restyle;
+  // O botão mostra o tema para onde ele leva.
+  if CurrentTheme = ntDark then
+  begin
+    FBtnTheme.IconData := ICO_SOL;
+    FBtnTheme.Hint := 'Tema claro';
+  end
+  else
+  begin
+    FBtnTheme.IconData := ICO_LUA;
+    FBtnTheme.Hint := 'Tema escuro';
+  end;
+  FBtnTheme.Restyle;
   UpdatePanelButtons;
   UpdateStar;
   FPanelDownloads.Restyle;
   FPanelBookmarks.Restyle;
+  FPanelSettings.Restyle;
 end;
 
 { Abas }
@@ -806,7 +832,7 @@ begin
   if ATab <> nil then
   begin
     LayoutEngine;
-    ATab.Engine.SetVisible(True);
+    ATab.Engine.SetVisible(not ATab.HasErrorPage);
   end;
   StyleTabs;
   FStage.Loading := (ATab <> nil) and ATab.Loading;
@@ -1011,10 +1037,21 @@ begin
 end;
 
 procedure TFormMain.UpdatePageMessage;
+var
+  Show: Boolean;
 begin
-  FPageMessage.Visible := (FActive <> nil) and (FActive.Error <> '');
-  if FPageMessage.Visible then
-    FPageMessage.Text := FActive.Error;
+  Show := (FActive <> nil) and FActive.HasErrorPage;
+  if Show then
+  begin
+    FErrorView.Prepare(FActive.NavError, FActive.AttemptUrl, FActive.Error);
+    FErrorView.Visible := True;
+    FErrorView.BringToFront;
+  end
+  else
+    FErrorView.Visible := False;
+  // Espaço aéreo: com a página de erro na frente, a janela da página sai de cena.
+  if FActive <> nil then
+    FActive.Engine.SetVisible(not Show);
 end;
 
 procedure TFormMain.UpdateProgress;
@@ -1101,6 +1138,8 @@ begin
     Exit;
   if FActive.Loading then
     FActive.Engine.Stop
+  else if FActive.HasErrorPage then
+    FActive.Retry
   else
     FActive.Engine.Reload;
 end;
@@ -1175,6 +1214,12 @@ begin
   FPanelBookmarks.OnDelete := BookmarkDelete;
   FPanelBookmarks.Rebuild;
   FBookmarks.OnChange := BookmarksChanged;
+
+  FPanelSettings := TNecoSettingsPanel.CreateFor(Self, FSettings, FBlocklist.Count);
+  FPanelSettings.Parent := FBody;
+  FPanelSettings.Visible := False;
+  FPanelSettings.OnCloseRequest := PanelCloseRequest;
+  FPanelSettings.OnChanged := SettingsChanged;
 end;
 
 procedure TFormMain.ShowPanel(APanel: TNecoSidePanel);
@@ -1182,6 +1227,7 @@ begin
   // Um painel por vez. Ele encolhe a área da página (OnResized reposiciona o motor).
   FPanelDownloads.Visible := APanel = FPanelDownloads;
   FPanelBookmarks.Visible := APanel = FPanelBookmarks;
+  FPanelSettings.Visible := APanel = FPanelSettings;
   UpdatePanelButtons;
 end;
 
@@ -1211,6 +1257,7 @@ procedure TFormMain.UpdatePanelButtons;
 begin
   Mark(FBtnBookmarks, FPanelBookmarks.Visible);
   Mark(FBtnDownloads, FPanelDownloads.Visible);
+  Mark(FBtnSettings, FPanelSettings.Visible);
 end;
 
 procedure TFormMain.BookmarksClick(Sender: TObject);
@@ -1306,6 +1353,75 @@ begin
     end);
 end;
 
+{ Tema, configurações e página de erro }
+
+procedure TFormMain.SaveSettings;
+begin
+  try
+    FSettings.Save;
+  except
+    // Sem disco agora: o SaveData do fechamento tenta de novo.
+  end;
+end;
+
+procedure TFormMain.SetTheme(ATheme: TNecoTheme);
+var
+  T: TNecoTab;
+begin
+  FSettings.Theme := ATheme;
+  NecoSetTheme(ATheme);
+  ApplyTheme;
+  // Os sites que respeitam prefers-color-scheme trocam junto.
+  for T in FTabs do
+    T.Engine.SetDarkMode(ATheme = ntDark);
+  FPanelSettings.Refresh;
+  SaveSettings;
+end;
+
+procedure TFormMain.ThemeClick(Sender: TObject);
+begin
+  if CurrentTheme = ntDark then
+    SetTheme(ntLight)
+  else
+    SetTheme(ntDark);
+end;
+
+procedure TFormMain.SettingsClick(Sender: TObject);
+begin
+  TogglePanel(FPanelSettings);
+end;
+
+procedure TFormMain.SettingsChanged(Sender: TObject; AChange: TNecoSettingsChange);
+begin
+  // O painel já gravou a escolha em FSettings; aqui ela passa a valer.
+  case AChange of
+    scTheme:
+      begin
+        SetTheme(FSettings.Theme);
+        Exit; // SetTheme já gravou
+      end;
+    scBlocker:
+      begin
+        UpdateShield;
+        if (FActive <> nil) and (FActive.Url <> '') then
+          FActive.Engine.Reload;
+      end;
+    scNeco:
+      begin
+        FStage.SetShown(FSettings.NecoShown);
+        // As Necos dos painéis e da página de erro param de desenhar no próximo quadro.
+        Invalidate;
+      end;
+  end;
+  SaveSettings;
+end;
+
+procedure TFormMain.ErrorRetry(Sender: TObject);
+begin
+  if FActive <> nil then
+    FActive.Retry;
+end;
+
 { Bloqueador }
 
 function TFormMain.AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
@@ -1368,6 +1484,7 @@ begin
     // Sem disco: a escolha vale até fechar o app.
   end;
   UpdateShield;
+  FPanelSettings.Refresh;
   // Como as extensões de bloqueio: a página recarrega já com a nova regra.
   if (FActive <> nil) and (FActive.Url <> '') then
     FActive.Engine.Reload;

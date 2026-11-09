@@ -376,7 +376,7 @@ begin
   else
     FIcon.Fill.Kind := TBrushKind.None;
   if FCaption <> nil then
-    FCaption.TextSettings.FontColor := Palette.Text;
+    FCaption.TextSettings.FontColor := C; // o texto acompanha o ícone
   if Enabled then
     Opacity := 1
   else
