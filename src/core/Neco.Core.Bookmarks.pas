@@ -33,6 +33,8 @@ type
     /// Troca o nome do favorito. Nome vazio é ignorado. Devolve False se a URL não existe.
     function Rename(const AUrl, ATitle: string): Boolean;
     procedure Delete(AIndex: Integer);
+    /// Muda a posição (arrastar na barra). Índices fora da lista: nada muda.
+    procedure Move(AFrom, ATo: Integer);
     /// Liga ou desliga o favorito da URL. Devolve True se ficou favoritado.
     function Toggle(const ATitle, AUrl: string): Boolean;
     procedure Clear;
@@ -146,6 +148,15 @@ end;
 procedure TNecoBookmarks.Delete(AIndex: Integer);
 begin
   FItems.Delete(AIndex);
+  Changed;
+end;
+
+procedure TNecoBookmarks.Move(AFrom, ATo: Integer);
+begin
+  if (AFrom = ATo) or (AFrom < 0) or (ATo < 0) or (AFrom >= FItems.Count) or
+    (ATo >= FItems.Count) then
+    Exit;
+  FItems.Move(AFrom, ATo);
   Changed;
 end;
 

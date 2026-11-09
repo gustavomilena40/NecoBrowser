@@ -12,7 +12,7 @@ uses
   Neco.Engine.Intf, Neco.Core.Blocklist;
 
 type
-  TNecoTabChange = (tcTitle, tcUrl, tcLoading, tcHistory, tcBlocked, tcError);
+  TNecoTabChange = (tcTitle, tcUrl, tcLoading, tcHistory, tcBlocked, tcError, tcFavicon);
   TNecoTabChangeEvent = procedure(Sender: TObject; AChange: TNecoTabChange) of object;
   TNecoTabUrlEvent = procedure(Sender: TObject; const AUrl: string) of object;
   TNecoTabBoolEvent = procedure(Sender: TObject; AValue: Boolean) of object;
@@ -41,7 +41,9 @@ type
     FOnNavigated: TNecoTabUrlEvent;
     FOnFullScreen: TNecoTabBoolEvent;
     FLazyUrl: string;
+    FFavicon: TBytes;
     procedure EngineFullScreen(Sender: TObject; AValue: Boolean);
+    procedure EngineFavicon(Sender: TObject; const AData: TBytes);
     procedure Changed(AChange: TNecoTabChange);
     // Sem const: a assinatura tem que bater com TFunc<string, Boolean>.
     function FilterRequest(AUrl: string): Boolean;
@@ -97,6 +99,8 @@ type
     /// Navegação principal concluída com sucesso (para o histórico).
     property OnNavigated: TNecoTabUrlEvent read FOnNavigated write FOnNavigated;
     property OnFullScreen: TNecoTabBoolEvent read FOnFullScreen write FOnFullScreen;
+    /// Ícone (PNG) da página atual; vazio até o motor mandar.
+    property Favicon: TBytes read FFavicon;
   end;
 
 implementation
@@ -126,6 +130,7 @@ begin
   FEngine.OnGotFocus := EngineFocus;
   FEngine.RequestFilter := FilterRequest;
   FEngine.OnFullScreen := EngineFullScreen;
+  FEngine.OnFavicon := EngineFavicon;
 end;
 
 destructor TNecoTab.Destroy;
@@ -186,6 +191,12 @@ begin
   Navigate(U);
 end;
 
+procedure TNecoTab.EngineFavicon(Sender: TObject; const AData: TBytes);
+begin
+  FFavicon := AData;
+  Changed(tcFavicon);
+end;
+
 procedure TNecoTab.EngineFullScreen(Sender: TObject; AValue: Boolean);
 begin
   if Assigned(FOnFullScreen) then
@@ -194,6 +205,10 @@ end;
 
 function TNecoTab.DisplayTitle: string;
 begin
+  // Arquivo do computador: o Chromium põe o nome codificado (%20...) como título.
+  Result := NecoFileUrlName(FUrl);
+  if (Result <> '') and ((FTitle = '') or FTitle.Contains('%') or FTitle.StartsWith('file:', True)) then
+    Exit;
   // about:blank (aba nova, ou aba cuja navegação virou download) aparece como "Nova aba".
   if (FTitle <> '') and not SameText(FTitle, 'about:blank') then
     Result := FTitle

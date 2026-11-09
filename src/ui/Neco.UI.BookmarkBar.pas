@@ -4,7 +4,10 @@
 
   Uma "pílula" por favorito, na ordem da lista. As que não cabem somem e aparece o
   botão », que abre o painel de favoritos. Clique abre na aba atual, botão do meio em
-  aba nova, botão direito pede ao form para editar o nome (no painel).
+  Aba nova, botão direito pede ao form para editar o nome (no painel).
+
+  Cada pílula mostra o ícone do site, se já foi guardado (Neco.Core.Favicons); sem
+  ícone, só o nome. Arrastar uma pílula muda a posição (como as abas).
 
   A barra só mostra o TNecoBookmarks; quem muda a lista é o form, fora dos cliques. }
 
@@ -16,6 +19,8 @@ uses
   Neco.Core.Bookmarks, Neco.UI.Theme, Neco.UI.Bookmarks;
 
 type
+  TNecoMoveEvent = procedure(Sender: TObject; AFrom, ATo: Integer) of object;
+
   TNecoBookmarkBar = class(TRectangle)
   private
     FBookmarks: TNecoBookmarks;
@@ -25,6 +30,17 @@ type
     FOnOpen: TNecoOpenUrlEvent;
     FOnEdit: TNecoUrlNotify;
     FOnMore: TNotifyEvent;
+    FOnMove: TNecoMoveEvent;
+    FFaviconDir: string;
+    // arrasto de uma pílula
+    FDragChip: TRectangle;
+    FDragging: Boolean;
+    FDragStartX, FDragGrabX: Single;
+    FDragFrom: Integer;
+    FSuppressClick: Boolean;
+    function BarX(ASender: TObject; X, Y: Single): Single;
+    procedure ChipMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+    procedure ChipMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure ChipClick(Sender: TObject);
     procedure ChipMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState; X, Y: Single);
     procedure ChipHover(Sender: TObject);
@@ -36,6 +52,8 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
     property Bookmarks: TNecoBookmarks read FBookmarks write FBookmarks;
+    /// Pasta dos ícones dos sites.
+    property FaviconDir: string read FFaviconDir write FFaviconDir;
     /// Refaz as pílulas. Não chamar de dentro de um clique numa pílula.
     procedure Rebuild;
     procedure Restyle;
@@ -44,6 +62,8 @@ type
     property OnEdit: TNecoUrlNotify read FOnEdit write FOnEdit;
     /// Botão »: abrir o painel com a lista inteira.
     property OnMore: TNotifyEvent read FOnMore write FOnMore;
+    /// Pílula arrastada para outra posição (índices da lista). O form adia a mudança.
+    property OnMove: TNecoMoveEvent read FOnMove write FOnMove;
   end;
 
 const
@@ -52,7 +72,7 @@ const
 implementation
 
 uses
-  System.Math, FMX.TextLayout;
+  System.Math, FMX.TextLayout, Neco.Core.Favicons;
 
 const
   CChipHeight = 26;
@@ -117,10 +137,14 @@ var
   I: Integer;
   B: TNecoBookmark;
   C: TRectangle;
-  Ico: TPath;
+  Img: TImage;
   L: TLabel;
-  T: string;
+  T, F: string;
+  TextX: Single;
 begin
+  // As pílulas vão embora: um arrasto em andamento acaba aqui.
+  FDragChip := nil;
+  FDragging := False;
   BeginUpdate;
   try
     for C in FChips do
@@ -148,14 +172,29 @@ begin
         C.OnMouseDown := ChipMouseDown;
         C.OnMouseEnter := ChipHover;
         C.OnMouseLeave := ChipHover;
-        C.Width := Min(CChipMaxWidth, 34 + TextWidth(T, 12));
+        C.OnMouseMove := ChipMouseMove;
+        C.OnMouseUp := ChipMouseUp;
 
-        Ico := NecoNewIcon(Self, C, ICO_ESTRELA, 12, Palette.Star);
-        Ico.Fill.Kind := TBrushKind.Solid;
-        Ico.Fill.Color := Palette.Star;
-        Ico.SetBounds(9, (CChipHeight - 12) / 2, 12, 12);
+        // Ícone do site, se a Neco já guardou; senão só o nome (sem estrela).
+        TextX := 10;
+        F := NecoFaviconFile(FFaviconDir, B.Url);
+        if (F <> '') and FileExists(F) then
+        begin
+          Img := TImage.Create(Self);
+          Img.Parent := C;
+          Img.HitTest := False;
+          Img.WrapMode := TImageWrapMode.Fit;
+          try
+            Img.Bitmap.LoadFromFile(F);
+            Img.SetBounds(9, (CChipHeight - 16) / 2, 16, 16);
+            TextX := 31;
+          except
+            Img.Free; // PNG estragado: fica sem ícone
+          end;
+        end;
+        C.Width := Min(CChipMaxWidth, TextX + 10 + TextWidth(T, 12));
         L := NecoNewLabel(Self, C, T, 12);
-        L.SetBounds(26, 0, C.Width - 32, CChipHeight);
+        L.SetBounds(TextX, 0, C.Width - TextX - 6, CChipHeight);
 
         StyleChip(C);
         FChips.Add(C);
@@ -186,7 +225,9 @@ begin
       Continue;
     end;
     C.Visible := True;
-    C.SetBounds(X, (CBookmarkBarHeight - CChipHeight) / 2 - 1, C.Width, CChipHeight);
+    // A arrastada segue o mouse; as outras abrem espaço para ela.
+    if not (FDragging and (C = FDragChip)) then
+      C.SetBounds(X, (CBookmarkBarHeight - CChipHeight) / 2 - 1, C.Width, CChipHeight);
     X := X + C.Width + CChipGap;
   end;
   FBtnMore.Visible := Hidden;
@@ -214,6 +255,12 @@ end;
 
 procedure TNecoBookmarkBar.ChipClick(Sender: TObject);
 begin
+  // Fim de um arrasto não é clique.
+  if FSuppressClick then
+  begin
+    FSuppressClick := False;
+    Exit;
+  end;
   if Assigned(FOnOpen) then
     FOnOpen(Self, TFmxObject(Sender).TagString, False);
 end;
@@ -221,10 +268,80 @@ end;
 procedure TNecoBookmarkBar.ChipMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
   X, Y: Single);
 begin
-  if (Button = TMouseButton.mbMiddle) and Assigned(FOnOpen) then
+  if Button = TMouseButton.mbLeft then
+  begin
+    // Pode virar arrasto (ChipMouseMove) se o mouse andar mais que uns pixels.
+    FDragChip := TRectangle(Sender);
+    FDragging := False;
+    FSuppressClick := False;
+    FDragStartX := BarX(Sender, X, Y);
+    FDragGrabX := FDragStartX - FDragChip.Position.X;
+    FDragFrom := FChips.IndexOf(FDragChip);
+  end
+  else if (Button = TMouseButton.mbMiddle) and Assigned(FOnOpen) then
     FOnOpen(Self, TFmxObject(Sender).TagString, True)
   else if (Button = TMouseButton.mbRight) and Assigned(FOnEdit) then
     FOnEdit(Self, TFmxObject(Sender).TagString);
+end;
+
+function TNecoBookmarkBar.BarX(ASender: TObject; X, Y: Single): Single;
+begin
+  Result := AbsoluteToLocal(TControl(ASender).LocalToAbsolute(TPointF.Create(X, Y))).X;
+end;
+
+procedure TNecoBookmarkBar.ChipMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
+var
+  C: TRectangle;
+  P, NewX, Center: Single;
+  Cur, Idx: Integer;
+begin
+  if (FDragChip = nil) or (Sender <> FDragChip) or not (ssLeft in Shift) then
+    Exit;
+  P := BarX(Sender, X, Y);
+  if not FDragging then
+  begin
+    if Abs(P - FDragStartX) < 6 then
+      Exit; // clique comum, não arrasto
+    FDragging := True;
+    FDragChip.BringToFront;
+    FDragChip.Opacity := 0.85;
+  end;
+  NewX := Max(8, Min(Width - 8 - FDragChip.Width, P - FDragGrabX));
+  FDragChip.Position.X := NewX;
+  // Nova vaga: quantas pílulas visíveis ficam com o centro à esquerda do centro dela.
+  Center := NewX + FDragChip.Width / 2;
+  Idx := 0;
+  for C in FChips do
+    if (C <> FDragChip) and C.Visible and (C.Position.X + C.Width / 2 < Center) then
+      Inc(Idx);
+  Cur := FChips.IndexOf(FDragChip);
+  if Idx <> Cur then
+  begin
+    FChips.Move(Cur, Idx);
+    LayoutChips;
+  end;
+end;
+
+procedure TNecoBookmarkBar.ChipMouseUp(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
+  X, Y: Single);
+var
+  ToIdx: Integer;
+begin
+  if (Button <> TMouseButton.mbLeft) or (Sender <> FDragChip) then
+    Exit;
+  if FDragging then
+  begin
+    FDragging := False;
+    FDragChip.Opacity := 1;
+    FSuppressClick := True; // o OnClick vem logo depois deste evento
+    ToIdx := FChips.IndexOf(FDragChip);
+    LayoutChips; // encaixa na vaga
+    FDragChip := nil;
+    if (ToIdx <> FDragFrom) and Assigned(FOnMove) then
+      FOnMove(Self, FDragFrom, ToIdx);
+  end
+  else
+    FDragChip := nil;
 end;
 
 procedure TNecoBookmarkBar.ChipHover(Sender: TObject);

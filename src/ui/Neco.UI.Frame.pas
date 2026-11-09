@@ -44,6 +44,8 @@ function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
 function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+/// Trava com nome (por processo, até ele fechar). True = esta instância é a primeira.
+function NecoAcquireInstanceLock(const AName: string): Boolean;
 /// Abre o arquivo com o programa padrão do sistema.
 procedure NecoShellOpen(const APath: string);
 /// Abre a pasta do arquivo, com ele selecionado.
@@ -334,6 +336,19 @@ begin
   end;
 end;
 
+function NecoAcquireInstanceLock(const AName: string): Boolean;
+var
+  N: string;
+  H: THandle;
+begin
+  // '\' separa espaço de nomes no Windows: o caminho da pasta vira um nome plano.
+  N := 'NecoBrowser.' + StringReplace(StringReplace(LowerCase(AName), '\', '_', [rfReplaceAll]),
+    ':', '_', [rfReplaceAll]);
+  H := CreateMutex(nil, False, PChar(N));
+  // O handle fica aberto de propósito: o Windows solta quando o processo termina.
+  Result := (H <> 0) and (GetLastError <> ERROR_ALREADY_EXISTS);
+end;
+
 procedure NecoShellOpen(const APath: string);
 begin
   if APath <> '' then
@@ -387,6 +402,11 @@ end;
 
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
 begin
+end;
+
+function NecoAcquireInstanceLock(const AName: string): Boolean;
+begin
+  Result := True;
 end;
 
 procedure NecoShellOpen(const APath: string);

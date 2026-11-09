@@ -20,6 +20,7 @@ type
   TNecoBookmarksPanel = class(TNecoSidePanel)
   private
     FBookmarks: TNecoBookmarks;
+    FFaviconDir: string;
     FOnOpen: TNecoOpenUrlEvent;
     FOnDelete: TNecoUrlNotify;
     FOnRename: TNecoRenameEvent;
@@ -41,6 +42,8 @@ type
     constructor Create(AOwner: TComponent); override;
     /// Lista que o painel mostra (não é dono dela).
     property Bookmarks: TNecoBookmarks read FBookmarks write FBookmarks;
+    /// Pasta dos ícones dos sites (sem ícone guardado: estrela).
+    property FaviconDir: string read FFaviconDir write FFaviconDir;
     /// Refaz as linhas a partir da lista. Não chamar de dentro de um clique numa linha.
     procedure Rebuild;
     procedure Restyle; override;
@@ -53,6 +56,9 @@ type
   end;
 
 implementation
+
+uses
+  Neco.Core.Favicons;
 
 { TNecoBookmarksPanel }
 
@@ -71,6 +77,8 @@ var
   Mid: TLayout;
   T, U: TLabel;
   Ico: TPath;
+  Img: TImage;
+  F: string;
   Del, Ed: TNecoIconButton;
 begin
   // Um campo em edição morre junto com a linha: sem avisos dele daqui para frente.
@@ -102,11 +110,31 @@ begin
       R.OnMouseEnter := RowHover;
       R.OnMouseLeave := RowHover;
 
-      Ico := NecoNewIcon(Self, R, ICO_ESTRELA, 16, Palette.Star);
-      Ico.Align := TAlignLayout.Left;
-      Ico.Margins.Rect := TRectF.Create(12, 18, 10, 18);
-      Ico.Fill.Kind := TBrushKind.Solid;
-      Ico.Fill.Color := Palette.Star;
+      Img := nil;
+      F := NecoFaviconFile(FFaviconDir, B.Url);
+      if (F <> '') and FileExists(F) then
+      begin
+        Img := TImage.Create(Self);
+        Img.Parent := R;
+        Img.HitTest := False;
+        Img.WrapMode := TImageWrapMode.Fit;
+        Img.Align := TAlignLayout.Left;
+        Img.Width := 16;
+        Img.Margins.Rect := TRectF.Create(12, 18, 10, 18);
+        try
+          Img.Bitmap.LoadFromFile(F);
+        except
+          FreeAndNil(Img);
+        end;
+      end;
+      if Img = nil then
+      begin
+        Ico := NecoNewIcon(Self, R, ICO_ESTRELA, 16, Palette.Star);
+        Ico.Align := TAlignLayout.Left;
+        Ico.Margins.Rect := TRectF.Create(12, 18, 10, 18);
+        Ico.Fill.Kind := TBrushKind.Solid;
+        Ico.Fill.Color := Palette.Star;
+      end;
 
       Del := NecoNewButton(Self, R, ICO_LIXEIRA, 'Remover dos favoritos', DeleteClick);
       Del.Align := TAlignLayout.Right;

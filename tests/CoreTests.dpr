@@ -14,7 +14,8 @@ uses
   Neco.Core.Blocklist in '..\src\core\Neco.Core.Blocklist.pas',
   Neco.Core.Bookmarks in '..\src\core\Neco.Core.Bookmarks.pas',
   Neco.Core.History in '..\src\core\Neco.Core.History.pas',
-  Neco.Core.Settings in '..\src\core\Neco.Core.Settings.pas';
+  Neco.Core.Settings in '..\src\core\Neco.Core.Settings.pas',
+  Neco.Core.Favicons in '..\src\core\Neco.Core.Favicons.pas';
 
 var
   Falhas: Integer = 0;
@@ -61,6 +62,18 @@ begin
   CheckEq(NecoInputToUrl('c++ & c#', D), 'https://duckduckgo.com/?q=c%2B%2B+%26+c%23', 'simbolos');
   CheckEq(NecoInputToUrl('versão.final', D), 'https://versão.final', 'dominio com acento (IDN)');
   CheckEq(NecoInputToUrl('', D), '', 'vazio');
+
+  Writeln('Arquivos locais');
+  CheckEq(NecoInputToUrl('C:\Docs\a.pdf', D), 'file:///C:/Docs/a.pdf', 'caminho simples');
+  CheckEq(NecoInputToUrl('"C:\Meus Docs\nota #1.txt"', D), 'file:///C:/Meus%20Docs/nota%20%231.txt',
+    'aspas, espaco e #');
+  CheckEq(NecoInputToUrl('d:/relatório.pdf', D), 'file:///d:/relatório.pdf', 'barra normal e acento');
+  CheckEq(NecoInputToUrl('\\srv\pub\x.txt', D), 'file://srv/pub/x.txt', 'UNC');
+  CheckEq(NecoInputToUrl('file:///C:/x.txt', D), 'file:///C:/x.txt', 'file: ja pronto');
+  CheckEq(NecoPathToFileUrl('c:'), '', 'so a letra nao e caminho');
+  CheckEq(NecoFileUrlName('file:///C:/Meus%20Docs/nota%20%231.txt'), 'nota #1.txt', 'nome do arquivo');
+  CheckEq(NecoFileUrlName('file:///C:/a/rel%C3%A1t%C3%B3rio+v2.pdf#page=2'), 'relátório+v2.pdf', 'UTF-8, + e #');
+  CheckEq(NecoFileUrlName('https://x.com/a.pdf'), '', 'nao e arquivo');
 
   Writeln('Host');
   CheckEq(NecoExtractHost('https://User:Pw@Ads.Example.COM:8443/x?y#z'), 'ads.example.com', 'host completo');
@@ -132,6 +145,12 @@ begin
     Check(A.Rename('https://example.com/', '') and (A[0].Title = 'Meu exemplo'), 'nome vazio e ignorado');
     Check(not A.Rename('https://nao.existe/', 'X'), 'renomear URL inexistente');
     A.Rename('https://example.com/', 'Exemplo novo');
+    A.Add('Z', 'https://z.com/');
+    A.Move(2, 0);
+    Check((A[0].Url = 'https://z.com/') and (A[1].Url = 'https://example.com/'), 'mover para o inicio');
+    A.Move(0, 9);
+    Check(A[0].Url = 'https://z.com/', 'mover fora da lista nao muda');
+    A.Remove('https://z.com/');
 
     A.SaveToFile(Arq);
     Check(TFile.Exists(Arq) and not TFile.Exists(Arq + '.tmp'), 'gravacao atomica sem sobra');
@@ -229,6 +248,23 @@ begin
   end;
 end;
 
+procedure TestarFavicons(const APasta: string);
+var
+  Dir: string;
+  Png: TBytes;
+begin
+  Writeln('Icones dos sites');
+  Dir := TPath.Combine(APasta, 'favicons');
+  CheckEq(NecoFaviconFile(Dir, 'https://Claude.AI/new'), TPath.Combine(Dir, 'claude.ai.png'), 'arquivo pelo host');
+  CheckEq(NecoFaviconFile(Dir, 'file:///C:/a.pdf'), '', 'arquivo local nao tem icone');
+  Png := TBytes.Create(1, 2, 3);
+  Check(NecoSaveFavicon(Dir, 'https://claude.ai/', Png), 'grava novo');
+  Check(not NecoSaveFavicon(Dir, 'https://claude.ai/chat', Png), 'igual nao regrava');
+  Check(NecoSaveFavicon(Dir, 'https://claude.ai/', TBytes.Create(4)), 'diferente regrava');
+  Check(not NecoSaveFavicon(Dir, 'https://claude.ai/', nil), 'vazio ignorado');
+  Check(Length(TFile.ReadAllBytes(NecoFaviconFile(Dir, 'https://claude.ai/'))) = 1, 'conteudo novo');
+end;
+
 var
   Pasta: string;
 begin
@@ -242,6 +278,7 @@ begin
       TestarBookmarks(Pasta);
       TestarHistory(Pasta);
       TestarSettings(Pasta);
+      TestarFavicons(Pasta);
     except
       on E: Exception do
       begin

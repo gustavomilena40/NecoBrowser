@@ -14,6 +14,13 @@ type
 /// Endereço (com ou sem esquema) vira URL; o resto vira busca. Texto vazio devolve ''.
 function NecoInputToUrl(const AText: string; AEngine: TNecoSearchEngine): string;
 
+/// Caminho do Windows (C:\pasta\a.pdf ou \\servidor\pasta\a.txt) vira file:///.
+/// Aspas em volta ("Copiar como caminho" do Explorer) saem. Outro texto: vazio.
+function NecoPathToFileUrl(const APath: string): string;
+
+/// Nome do arquivo de um endereço file: (último trecho, %xx decodificado). Outro: vazio.
+function NecoFileUrlName(const AUrl: string): string;
+
 /// True se o texto, sem espaços, parece um endereço (domínio, IP, localhost ou esquema).
 function NecoLooksLikeUrl(const AText: string): Boolean;
 
@@ -207,6 +214,82 @@ begin
   end;
 end;
 
+function NecoPathToFileUrl(const APath: string): string;
+var
+  T: string;
+  C: Char;
+  SB: TStringBuilder;
+begin
+  Result := '';
+  T := Trim(APath);
+  if (Length(T) >= 2) and (T[1] = '"') and (T[Length(T)] = '"') then
+    T := Trim(Copy(T, 2, Length(T) - 2));
+  if (Length(T) >= 3) and CharInSet(T[1], ['A'..'Z', 'a'..'z']) and (T[2] = ':') and
+    CharInSet(T[3], ['\', '/']) then
+    Result := 'file:///'
+  else if (Length(T) >= 3) and (T[1] = '\') and (T[2] = '\') and (T[3] <> '\') then
+  begin
+    Result := 'file://';
+    T := Copy(T, 3, MaxInt);
+  end
+  else
+    Exit;
+  // Barras para a frente; só o que quebra a URL é codificado (acentos o Chromium aceita).
+  SB := TStringBuilder.Create(Result);
+  try
+    for C in T do
+      case C of
+        '\': SB.Append('/');
+        ' ': SB.Append('%20');
+        '#': SB.Append('%23');
+        '%': SB.Append('%25');
+        '?': SB.Append('%3F');
+      else
+        SB.Append(C);
+      end;
+    Result := SB.ToString;
+  finally
+    SB.Free;
+  end;
+end;
+
+function NecoFileUrlName(const AUrl: string): string;
+var
+  S: string;
+  B: TBytes;
+  I, N, V: Integer;
+begin
+  Result := '';
+  if not AUrl.StartsWith('file:', True) then
+    Exit;
+  S := AUrl;
+  I := S.IndexOfAny(['?', '#']);
+  if I >= 0 then
+    S := Copy(S, 1, I);
+  S := Copy(S, S.LastIndexOf('/') + 2, MaxInt);
+  // %xx são bytes UTF-8; '+' fica como está (é parte do nome, não espaço).
+  SetLength(B, Length(S) * 3);
+  N := 0;
+  I := 1;
+  while I <= Length(S) do
+  begin
+    if (S[I] = '%') and (I + 2 <= Length(S)) and TryStrToInt('$' + Copy(S, I + 1, 2), V) then
+    begin
+      B[N] := V;
+      Inc(N);
+      Inc(I, 3);
+    end
+    else
+    begin
+      var U := TEncoding.UTF8.GetBytes(S[I]);
+      Move(U[0], B[N], Length(U));
+      Inc(N, Length(U));
+      Inc(I);
+    end;
+  end;
+  Result := TEncoding.UTF8.GetString(B, 0, N);
+end;
+
 function NecoInputToUrl(const AText: string; AEngine: TNecoSearchEngine): string;
 var
   T, Host: string;
@@ -214,6 +297,10 @@ begin
   T := Trim(AText);
   if T = '' then
     Exit('');
+  // Arquivo do computador: o navegador também é leitor (PDF, TXT, imagens...).
+  Result := NecoPathToFileUrl(T);
+  if Result <> '' then
+    Exit;
   if HasKnownScheme(T) then
     Exit(T);
   if NecoLooksLikeUrl(T) then

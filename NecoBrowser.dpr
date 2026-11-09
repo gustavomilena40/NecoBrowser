@@ -10,6 +10,7 @@ uses
   Neco.Core.Bookmarks in 'src\core\Neco.Core.Bookmarks.pas',
   Neco.Core.History in 'src\core\Neco.Core.History.pas',
   Neco.Core.Settings in 'src\core\Neco.Core.Settings.pas',
+  Neco.Core.Favicons in 'src\core\Neco.Core.Favicons.pas',
   Neco.Engine.Intf in 'src\engine\Neco.Engine.Intf.pas',
   Neco.Engine.WebView2 in 'src\engine\Neco.Engine.WebView2.pas',
   Neco.Engine.Factory in 'src\engine\Neco.Engine.Factory.pas',

@@ -10,7 +10,7 @@ interface
 uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Generics.Collections,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
-  FMX.Edit,
+  FMX.Edit, FMX.Dialogs,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
   Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
   Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
@@ -54,7 +54,9 @@ type
     FBtnShield: TNecoIconButton;
     FShieldBadge: TRectangle;
     FShieldBadgeText: TLabel;
-    FBtnBookmarks, FBtnHistory, FBtnDownloads, FBtnTheme, FBtnSettings: TNecoIconButton;
+    FBtnBookmarks, FBtnHistory, FBtnDownloads, FBtnTheme, FBtnSettings, FBtnOpen: TNecoIconButton;
+    // Primeira janela com este perfil: só ela grava e restaura as abas da sessão.
+    FSessionOwner: Boolean;
     FBtnStar: TNecoIconButton;
     FBookmarkBar: TNecoBookmarkBar;
     FProgressTrack: TLayout;
@@ -116,6 +118,10 @@ type
     procedure TabFullScreen(Sender: TObject; AValue: Boolean);
     procedure ApplyFullScreen;
     procedure HistoryClick(Sender: TObject);
+    procedure OpenFileClick(Sender: TObject);
+    function FaviconDir: string;
+    procedure StoreFavicon(ATab: TNecoTab);
+    procedure BookmarkMove(Sender: TObject; AFrom, ATo: Integer);
     procedure HistoryClear(Sender: TObject);
 
     // abas
@@ -198,7 +204,7 @@ implementation
 
 uses
   System.IOUtils, System.Math, System.ZLib,
-  Neco.Core.Url, Neco.Core.Trace, Neco.Engine.Factory;
+  Neco.Core.Url, Neco.Core.Trace, Neco.Core.Favicons, Neco.Engine.Factory;
 
 {$R *.fmx}
 // Lista de bloqueio comprimida (tools\neco_embutidos.py): o exe funciona sem arquivos ao lado.
@@ -214,6 +220,7 @@ begin
   FTabs := TObjectList<TNecoTab>.Create(False);
   FClosed := TList<string>.Create;
   LoadData;
+  FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir);
   NecoSetTheme(FSettings.Theme);
   NecoSetShown(FSettings.NecoShown);
 
@@ -273,6 +280,9 @@ begin
   for I := 1 to ParamCount do
     if not ParamStr(I).StartsWith('-') then
     begin
+      // "Abrir com" do Explorer passa o caminho do arquivo (às vezes relativo).
+      if FileExists(ParamStr(I)) then
+        Exit(NecoPathToFileUrl(ExpandFileName(ParamStr(I))));
       Result := NecoInputToUrl(ParamStr(I), FSettings.SearchEngine);
       if Result <> '' then
         Exit;
@@ -293,7 +303,7 @@ var
 begin
   Result := False;
   // Endereço na linha de comando e o teste de memória abrem só o que pediram.
-  if not FSettings.RestoreSession or (CmdLineUrl <> '') or
+  if not FSessionOwner or not FSettings.RestoreSession or (CmdLineUrl <> '') or
     (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS') <> '') then
     Exit;
   if not FSettings.LoadSession(Urls, Active) or (Length(Urls) = 0) then
@@ -310,6 +320,10 @@ var
   Urls: TArray<string>;
   T: TNecoTab;
 begin
+  // Segunda janela (ex.: "Abrir com" um PDF com o navegador já aberto) não apaga a
+  // sessão da primeira.
+  if not FSessionOwner then
+    Exit;
   Urls := nil;
   for T in FTabs do
     if (T.Url <> '') and not SameText(T.Url, 'about:blank') then
@@ -463,6 +477,8 @@ begin
   FBookmarkBar.OnOpen := BookmarkOpen;
   FBookmarkBar.OnEdit := BookmarkEditRequest;
   FBookmarkBar.OnMore := BookmarksClick;
+  FBookmarkBar.OnMove := BookmarkMove;
+  FBookmarkBar.FaviconDir := FaviconDir;
   FBookmarkBar.Visible := FSettings.ShowBookmarkBar;
   FBookmarkBar.Rebuild;
 
@@ -915,6 +931,7 @@ begin
   FBtnBookmarks := AddToolButton(ICO_MARCADOR, 'Favoritos (Ctrl+Shift+O)', BookmarksClick);
   FBtnHistory := AddToolButton(ICO_HISTORICO, 'Histórico (Ctrl+H)', HistoryClick);
   FBtnDownloads := AddToolButton(ICO_BAIXAR, 'Downloads (Ctrl+J)', DownloadsClick);
+  FBtnOpen := AddToolButton(ICO_ARQUIVO, 'Abrir arquivo: PDF, texto, imagem... (Ctrl+O)', OpenFileClick);
   FBtnTheme := AddToolButton(ICO_SOL, '', ThemeClick);
   FBtnSettings := AddToolButton(ICO_AJUSTES, 'Configurações', SettingsClick);
 
@@ -989,6 +1006,7 @@ begin
   UpdateShield;
   FBtnBookmarks.Restyle;
   FBtnHistory.Restyle;
+  FBtnOpen.Restyle;
   FBtnDownloads.Restyle;
   FBtnSettings.Restyle;
   // O botão mostra o tema para onde ele leva.
@@ -1150,6 +1168,8 @@ end;
 procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
 begin
   // O título aparece na faixa para todas as abas, não só a ativa.
+  if AChange = tcFavicon then
+    StoreFavicon(TNecoTab(Sender));
   if AChange = tcTitle then
   begin
     UpdateTabTitle(TNecoTab(Sender));
@@ -1508,6 +1528,7 @@ begin
   FPanelBookmarks.Visible := False;
   FPanelBookmarks.OnCloseRequest := PanelCloseRequest;
   FPanelBookmarks.Bookmarks := FBookmarks;
+  FPanelBookmarks.FaviconDir := FaviconDir;
   FPanelBookmarks.OnOpen := BookmarkOpen;
   FPanelBookmarks.OnDelete := BookmarkDelete;
   FPanelBookmarks.OnRename := BookmarkRename;
@@ -1574,6 +1595,80 @@ end;
 procedure TFormMain.BookmarksClick(Sender: TObject);
 begin
   TogglePanel(FPanelBookmarks);
+end;
+
+function TFormMain.FaviconDir: string;
+begin
+  Result := System.IOUtils.TPath.Combine(FSettings.DataDir, 'favicons');
+end;
+
+procedure TFormMain.StoreFavicon(ATab: TNecoTab);
+var
+  H: string;
+  I: Integer;
+  Found: Boolean;
+begin
+  // Guarda só o ícone de sites que estão nos favoritos (não enche o disco).
+  if (Length(ATab.Favicon) = 0) or (ATab.Url = '') then
+    Exit;
+  H := NecoExtractHost(ATab.Url);
+  Found := False;
+  for I := 0 to FBookmarks.Count - 1 do
+    if NecoExtractHost(FBookmarks[I].Url) = H then
+    begin
+      Found := True;
+      Break;
+    end;
+  if not Found then
+    Exit;
+  try
+    if not NecoSaveFavicon(FaviconDir, ATab.Url, ATab.Favicon) then
+      Exit;
+  except
+    Exit;
+  end;
+  // Ícone novo: as pílulas e o painel se refazem (fora do callback do motor).
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown then
+        Exit;
+      FBookmarkBar.Rebuild;
+      FPanelBookmarks.Rebuild;
+    end);
+end;
+
+procedure TFormMain.BookmarkMove(Sender: TObject; AFrom, ATo: Integer);
+begin
+  // Vem do soltar do mouse numa pílula; mudar a lista refaz a barra: depois do evento.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if not FShuttingDown then
+        FBookmarks.Move(AFrom, ATo);
+    end);
+end;
+
+procedure TFormMain.OpenFileClick(Sender: TObject);
+var
+  D: TOpenDialog;
+  F: string;
+begin
+  D := TOpenDialog.Create(nil);
+  try
+    D.Title := 'Abrir no NecoBrowser';
+    D.Filter := 'Arquivos que o navegador lê|*.pdf;*.txt;*.md;*.log;*.csv;*.json;*.xml;*.htm;*.html;' +
+      '*.svg;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp;*.ico;*.mp4;*.webm;*.mp3;*.wav;*.ogg|' +
+      'PDF|*.pdf|Texto|*.txt;*.md;*.log;*.csv;*.json;*.xml|Todos os arquivos|*.*';
+    D.Options := [TOpenOption.ofFileMustExist, TOpenOption.ofAllowMultiSelect];
+    if not D.Execute then
+      Exit;
+    // Cada arquivo numa aba nova; a última fica na frente.
+    for F in D.Files do
+      NewTab(NecoPathToFileUrl(F));
+  finally
+    D.Free;
+  end;
 end;
 
 procedure TFormMain.HistoryClick(Sender: TObject);
@@ -1646,6 +1741,12 @@ begin
   U := FActive.Url;
   if (U = '') or SameText(U, 'about:blank') then
     Exit;
+  // O ícone vai antes: o Toggle refaz a barra, que já o encontra.
+  if Length(FActive.Favicon) > 0 then
+    try
+      NecoSaveFavicon(FaviconDir, U, FActive.Favicon);
+    except
+    end;
   // Favoritou: a Neco faz pose.
   if FBookmarks.Toggle(FActive.DisplayTitle, U) then
     FStage.Perform('turn');
@@ -1941,6 +2042,8 @@ begin
     Acao := FocusAddress
   else if (M = [ssCtrl, ssShift]) and (AKey = vkT) then
     Acao := ReopenClosedTab
+  else if (M = [ssCtrl]) and (AKey = vkO) then
+    Acao := procedure begin OpenFileClick(nil); end
   else if (M = [ssCtrl]) and (AKey = vkH) then
     Acao := procedure
       begin

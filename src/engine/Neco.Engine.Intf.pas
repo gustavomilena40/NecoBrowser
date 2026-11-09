@@ -46,6 +46,7 @@ type
   TNecoUrlEvent = procedure(Sender: TObject; const AUrl: string) of object;
   TNecoErrorEvent = procedure(Sender: TObject; const AMessage: string) of object;
   TNecoBoolEvent = procedure(Sender: TObject; AValue: Boolean) of object;
+  TNecoBytesEvent = procedure(Sender: TObject; const AData: TBytes) of object;
   TNecoDownloadStartingEvent = procedure(Sender: TObject; const ADownload: INecoDownload) of object;
   /// AKey é o código de tecla virtual (vkXxx de System.UITypes). AHandled = True consome a tecla.
   TNecoAcceleratorKeyEvent = procedure(Sender: TObject; AKey: Word; AShift: TShiftState;
@@ -109,6 +110,8 @@ type
     procedure SetOnGotFocus(const AValue: TNotifyEvent);
     function GetOnFullScreen: TNecoBoolEvent;
     procedure SetOnFullScreen(const AValue: TNecoBoolEvent);
+    function GetOnFavicon: TNecoBytesEvent;
+    procedure SetOnFavicon(const AValue: TNecoBytesEvent);
 
     property RequestFilter: TNecoRequestFilter read GetRequestFilter write SetRequestFilter;
     property OnReady: TNotifyEvent read GetOnReady write SetOnReady;
@@ -130,6 +133,8 @@ type
     property OnGotFocus: TNotifyEvent read GetOnGotFocus write SetOnGotFocus;
     /// A página pediu tela cheia para um elemento (vídeo) ou saiu dela.
     property OnFullScreen: TNecoBoolEvent read GetOnFullScreen write SetOnFullScreen;
+    /// Ícone do site (PNG) da página atual; chega depois da navegação.
+    property OnFavicon: TNecoBytesEvent read GetOnFavicon write SetOnFavicon;
   end;
 
   /// Base com os campos de evento, para cada plataforma só implementar o motor.
@@ -148,6 +153,7 @@ type
     FOnAcceleratorKey: TNecoAcceleratorKeyEvent;
     FOnGotFocus: TNotifyEvent;
     FOnFullScreen: TNecoBoolEvent;
+    FOnFavicon: TNecoBytesEvent;
     /// Zera todos os eventos (chamado no Close, antes de soltar o motor nativo).
     procedure ClearEvents;
   public
@@ -177,6 +183,8 @@ type
     procedure SetOnGotFocus(const AValue: TNotifyEvent);
     function GetOnFullScreen: TNecoBoolEvent;
     procedure SetOnFullScreen(const AValue: TNecoBoolEvent);
+    function GetOnFavicon: TNecoBytesEvent;
+    procedure SetOnFavicon(const AValue: TNecoBytesEvent);
   end;
 
 implementation
@@ -198,6 +206,7 @@ begin
   FOnAcceleratorKey := nil;
   FOnGotFocus := nil;
   FOnFullScreen := nil;
+  FOnFavicon := nil;
 end;
 
 function TNecoEngineBase.GetRequestFilter: TNecoRequestFilter;
@@ -328,6 +337,16 @@ end;
 procedure TNecoEngineBase.SetOnFullScreen(const AValue: TNecoBoolEvent);
 begin
   FOnFullScreen := AValue;
+end;
+
+function TNecoEngineBase.GetOnFavicon: TNecoBytesEvent;
+begin
+  Result := FOnFavicon;
+end;
+
+procedure TNecoEngineBase.SetOnFavicon(const AValue: TNecoBytesEvent);
+begin
+  FOnFavicon := AValue;
 end;
 
 end.

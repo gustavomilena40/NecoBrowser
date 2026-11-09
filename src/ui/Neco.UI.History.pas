@@ -204,7 +204,10 @@ begin
   T.Align := TAlignLayout.Top;
   T.Height := 19;
   T.Position.Y := 0;
-  U := NecoNewLabel(Self, Mid, NecoExtractHost(AEntry.Url), 11, Palette.TextMuted);
+  if AEntry.Url.StartsWith('file:', True) then
+    U := NecoNewLabel(Self, Mid, 'Arquivo do computador', 11, Palette.TextMuted)
+  else
+    U := NecoNewLabel(Self, Mid, NecoExtractHost(AEntry.Url), 11, Palette.TextMuted);
   U.Align := TAlignLayout.Top;
   U.Height := 16;
   U.Position.Y := 100;

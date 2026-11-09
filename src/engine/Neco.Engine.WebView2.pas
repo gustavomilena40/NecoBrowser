@@ -74,7 +74,8 @@ type
     ICoreWebView2ProcessFailedEventHandler,
     ICoreWebView2AcceleratorKeyPressedEventHandler,
     ICoreWebView2FocusChangedEventHandler,
-    ICoreWebView2ContainsFullScreenElementChangedEventHandler)
+    ICoreWebView2ContainsFullScreenElementChangedEventHandler,
+    ICoreWebView2FaviconChangedEventHandler)
   private
     FEngine: TNecoWV2Engine;
     function ControllerCompleted(errorCode: HResult; const AController: ICoreWebView2Controller): HResult; stdcall;
@@ -98,6 +99,7 @@ type
       const args: ICoreWebView2AcceleratorKeyPressedEventArgs): HResult; stdcall;
     function GotFocus(const sender: ICoreWebView2Controller; const args: IUnknown): HResult; stdcall;
     function FullScreenChanged(const sender: ICoreWebView2; const args: IUnknown): HResult; stdcall;
+    function FaviconChanged(const sender: ICoreWebView2; const args: IUnknown): HResult; stdcall;
 
     function ICoreWebView2CreateCoreWebView2ControllerCompletedHandler.Invoke = ControllerCompleted;
     function ICoreWebView2NavigationStartingEventHandler.Invoke = NavigationStarting;
@@ -112,6 +114,7 @@ type
     function ICoreWebView2AcceleratorKeyPressedEventHandler.Invoke = AcceleratorKeyPressed;
     function ICoreWebView2FocusChangedEventHandler.Invoke = GotFocus;
     function ICoreWebView2ContainsFullScreenElementChangedEventHandler.Invoke = FullScreenChanged;
+    function ICoreWebView2FaviconChangedEventHandler.Invoke = FaviconChanged;
   public
     constructor Create(AEngine: TNecoWV2Engine);
     procedure Detach;
@@ -125,7 +128,8 @@ type
     FController: ICoreWebView2Controller;
     FWebView: ICoreWebView2;
     FTokNavStart, FTokNavDone, FTokSource, FTokHistory, FTokTitle, FTokNewWindow,
-    FTokResource, FTokDownload, FTokProcess, FTokAccel, FTokFocus, FTokFull: EventRegistrationToken;
+    FTokResource, FTokDownload, FTokProcess, FTokAccel, FTokFocus, FTokFull, FTokFav: EventRegistrationToken;
+    FHasFavToken: Boolean;
     FHasDownloadToken: Boolean;
     FPendingUrl: string;
     FBounds: TRect;
@@ -211,6 +215,16 @@ type
     function GetOnChanged: TNotifyEvent;
     procedure SetOnChanged(const AValue: TNotifyEvent);
     procedure Cancel;
+  end;
+
+  /// Uma leitura do ícone (GetFavicon é assíncrono). Segura o motor até responder.
+  TNecoWV2FaviconReq = class(TInterfacedObject, ICoreWebView2GetFaviconCompletedHandler)
+  private
+    FEngine: TNecoWV2Engine;
+    FKeep: IInterface;
+    function Invoke(errorCode: HResult; const AStream: IStream): HResult; stdcall;
+  public
+    constructor Create(AEngine: TNecoWV2Engine);
   end;
 
   TNecoWV2EnvHandler = class(TInterfacedObject, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)
@@ -830,6 +844,63 @@ begin
   end;
 end;
 
+function TNecoWV2Sink.FaviconChanged(const sender: ICoreWebView2; const args: IUnknown): HResult;
+var
+  E: TNecoWV2Engine;
+  W15: ICoreWebView2_15;
+begin
+  Result := S_OK;
+  E := FEngine;
+  if (E = nil) or (E.FWebView = nil) or not Assigned(E.FOnFavicon) then
+    Exit;
+  try
+    if Supports(E.FWebView, ICoreWebView2_15, W15) then
+      W15.GetFavicon(COREWEBVIEW2_FAVICON_IMAGE_FORMAT_PNG, TNecoWV2FaviconReq.Create(E));
+  except
+  end;
+end;
+
+{ TNecoWV2FaviconReq }
+
+constructor TNecoWV2FaviconReq.Create(AEngine: TNecoWV2Engine);
+begin
+  inherited Create;
+  FEngine := AEngine;
+  FKeep := AEngine;
+end;
+
+function TNecoWV2FaviconReq.Invoke(errorCode: HResult; const AStream: IStream): HResult;
+var
+  Data: TBytes;
+  Buf: array[0..8191] of Byte;
+  N: FixedUInt;
+  Len: Integer;
+begin
+  Result := S_OK;
+  try
+    if not FEngine.FClosed and Succeeded(errorCode) and (AStream <> nil) and
+      Assigned(FEngine.FOnFavicon) then
+    begin
+      Data := nil;
+      Len := 0;
+      // Ícone é pequeno; o teto evita ler sem fim um stream estranho.
+      while Len < 1024 * 1024 do
+      begin
+        N := 0;
+        if Failed(AStream.Read(@Buf[0], SizeOf(Buf), @N)) or (N = 0) then
+          Break;
+        SetLength(Data, Len + Integer(N));
+        System.Move(Buf[0], Data[Len], N);
+        Inc(Len, N);
+      end;
+      if Length(Data) > 0 then
+        FEngine.FOnFavicon(FEngine, Data);
+    end;
+  except
+  end;
+  FKeep := nil;
+end;
+
 { TNecoWV2Engine }
 
 constructor TNecoWV2Engine.Create(AParentWnd: HWND);
@@ -877,6 +948,7 @@ procedure TNecoWV2Engine.ControllerCreated(AError: HResult; const AController: I
 var
   C2: ICoreWebView2Controller2;
   W4: ICoreWebView2_4;
+  W15: ICoreWebView2_15;
   S: ICoreWebView2Settings;
   Cor: COREWEBVIEW2_COLOR;
   U: string;
@@ -925,6 +997,8 @@ begin
   FWebView.add_NewWindowRequested(FSink, FTokNewWindow);
   FWebView.add_ProcessFailed(FSink, FTokProcess);
   FWebView.add_ContainsFullScreenElementChanged(FSink, FTokFull);
+  if Supports(FWebView, ICoreWebView2_15, W15) then
+    FHasFavToken := Succeeded(W15.add_FaviconChanged(FSink, FTokFav));
   FWebView.AddWebResourceRequestedFilter('*', COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
   FWebView.add_WebResourceRequested(FSink, FTokResource);
   if Supports(FWebView, ICoreWebView2_4, W4) then
@@ -1147,6 +1221,7 @@ end;
 procedure TNecoWV2Engine.Close;
 var
   W4: ICoreWebView2_4;
+  W15: ICoreWebView2_15;
 begin
   if FClosed then
     Exit;
@@ -1171,6 +1246,8 @@ begin
     FWebView.remove_NewWindowRequested(FTokNewWindow);
     FWebView.remove_ProcessFailed(FTokProcess);
     FWebView.remove_ContainsFullScreenElementChanged(FTokFull);
+    if FHasFavToken and Supports(FWebView, ICoreWebView2_15, W15) then
+      W15.remove_FaviconChanged(FTokFav);
     FWebView.remove_WebResourceRequested(FTokResource);
     if FHasDownloadToken and Supports(FWebView, ICoreWebView2_4, W4) then
       W4.remove_DownloadStarting(FTokDownload);
