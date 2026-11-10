@@ -62,8 +62,14 @@ type
   public
     /// Elementos visuais da aba na faixa de abas (criados e liberados pelo form).
     Button: TRectangle;
+    /// Ícone do site na aba (escondido enquanto não há ícone).
+    Icon: TImage;
     TitleLabel: TLabel;
     CloseButton: TControl;
+    /// Última medição de memória dos processos desta aba (0 = sem medição).
+    MemoryBytes: UInt64;
+    /// Quantas abas dividem o processo com esta (1 = só ela).
+    MemoryShared: Integer;
     constructor Create(AForm: TCommonCustomForm; ABlocklist: TNecoBlocklist;
       const ABlockerOn: TFunc<Boolean>);
     destructor Destroy; override;

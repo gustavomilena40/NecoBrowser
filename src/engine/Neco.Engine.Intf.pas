@@ -55,6 +55,37 @@ type
   /// Roda centenas de vezes por página: precisa ser O(1).
   TNecoRequestFilter = TFunc<string, Boolean>;
 
+  INecoEngine = interface;
+
+  /// Memória de uma aba: os processos de página que desenham aquela aba.
+  TNecoMemoryTab = record
+    Engine: INecoEngine;
+    Bytes: UInt64;
+    /// Maior número de abas que dividem um mesmo processo de página com esta (1 = só ela).
+    /// Processo dividido entra em partes iguais em cada aba.
+    SharedWith: Integer;
+  end;
+
+  /// Retrato da memória do navegador inteiro: o próprio exe mais todos os processos do motor.
+  /// Valores em bytes de memória privada em uso (a coluna "Memória" do Gerenciador de Tarefas).
+  TNecoMemoryReport = record
+    /// O próprio NecoBrowser.exe.
+    App: UInt64;
+    /// Processo principal do motor (no Windows, o "Gerenciador WebView2").
+    Browser: UInt64;
+    /// Processos que desenham as páginas.
+    Pages: UInt64;
+    Gpu: UInt64;
+    /// Rede, áudio, armazenamento e outros auxiliares.
+    Other: UInt64;
+    /// Quantos processos entraram na conta (o exe incluído).
+    Processes: Integer;
+    /// Vazio quando o motor não sabe dizer qual processo é de qual aba.
+    Tabs: TArray<TNecoMemoryTab>;
+    function Total: UInt64;
+  end;
+  TNecoMemoryCallback = reference to procedure(const AReport: TNecoMemoryReport);
+
   INecoEngine = interface
     ['{6524948E-313F-4DFD-B6FD-DA3F12EEDD3B}']
     procedure Navigate(const AUrl: string);
@@ -81,6 +112,8 @@ type
     /// AForms: lembrar e sugerir o que foi digitado em formulários.
     /// APasswords: oferecer salvar senhas (o motor guarda cifradas no perfil dele).
     procedure SetAutofill(AForms, APasswords: Boolean);
+    /// Abre o gerenciador de tarefas do próprio motor (memória e CPU de cada página).
+    procedure OpenTaskManager;
     /// Solta o motor nativo e desliga todos os eventos. Chamadas posteriores são ignoradas.
     procedure Close;
 
@@ -188,6 +221,13 @@ type
   end;
 
 implementation
+
+{ TNecoMemoryReport }
+
+function TNecoMemoryReport.Total: UInt64;
+begin
+  Result := App + Browser + Pages + Gpu + Other;
+end;
 
 { TNecoEngineBase }
 

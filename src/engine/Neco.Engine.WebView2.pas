@@ -40,6 +40,9 @@ procedure NecoWV2Setup(const AOptions: TNecoWV2Options);
 function NecoWV2CreateEngine(AParentWnd: HWND): INecoEngine;
 /// Fecha todas as abas e downloads e solta o ambiente. Chamar ao fechar o app.
 procedure NecoWV2Shutdown;
+/// Mede a memória do exe e de todos os processos do WebView2. A resposta chega depois,
+/// na thread principal (não chega se o app fechar antes).
+procedure NecoWV2QueryMemory(const ACallback: TNecoMemoryCallback);
 {$ENDIF}
 
 implementation
@@ -181,6 +184,7 @@ type
     procedure ExecuteScript(const AScript: string);
     procedure SetDarkMode(ADark: Boolean);
     procedure SetAutofill(AForms, APasswords: Boolean);
+    procedure OpenTaskManager;
     procedure Close;
   end;
 
@@ -225,6 +229,15 @@ type
     function Invoke(errorCode: HResult; const AStream: IStream): HResult; stdcall;
   public
     constructor Create(AEngine: TNecoWV2Engine);
+  end;
+
+  /// Uma medição de memória (GetProcessExtendedInfos é assíncrono).
+  TNecoWV2MemoryReq = class(TInterfacedObject, ICoreWebView2GetProcessExtendedInfosCompletedHandler)
+  private
+    FCallback: TNecoMemoryCallback;
+    function Invoke(errorCode: HResult; const AInfos: ICoreWebView2ProcessExtendedInfoCollection): HResult; stdcall;
+  public
+    constructor Create(const ACallback: TNecoMemoryCallback);
   end;
 
   TNecoWV2EnvHandler = class(TInterfacedObject, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler)
@@ -878,13 +891,12 @@ var
 begin
   Result := S_OK;
   try
-    if not FEngine.FClosed and Succeeded(errorCode) and (AStream <> nil) and
-      Assigned(FEngine.FOnFavicon) then
+    if not FEngine.FClosed and Succeeded(errorCode) and Assigned(FEngine.FOnFavicon) then
     begin
       Data := nil;
       Len := 0;
       // Ícone é pequeno; o teto evita ler sem fim um stream estranho.
-      while Len < 1024 * 1024 do
+      while (AStream <> nil) and (Len < 1024 * 1024) do
       begin
         N := 0;
         if Failed(AStream.Read(@Buf[0], SizeOf(Buf), @N)) or (N = 0) then
@@ -893,8 +905,8 @@ begin
         System.Move(Buf[0], Data[Len], N);
         Inc(Len, N);
       end;
-      if Length(Data) > 0 then
-        FEngine.FOnFavicon(FEngine, Data);
+      // Vazio também é avisado: a página nova não tem ícone e a aba tira o da anterior.
+      FEngine.FOnFavicon(FEngine, Data);
     end;
   except
   end;
@@ -1218,6 +1230,16 @@ begin
   ApplyProfile;
 end;
 
+procedure TNecoWV2Engine.OpenTaskManager;
+var
+  W6: ICoreWebView2_6;
+begin
+  if FClosed or (FWebView = nil) then
+    Exit;
+  if Supports(FWebView, ICoreWebView2_6, W6) then
+    W6.OpenTaskManagerWindow;
+end;
+
 procedure TNecoWV2Engine.Close;
 var
   W4: ICoreWebView2_4;
@@ -1403,7 +1425,253 @@ begin
     FOp.Cancel;
 end;
 
+{ Memória }
+
+type
+  // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809+). O Winapi.PsAPI da RTL não tem.
+  TNecoMemCounters = record
+    cb: DWORD;
+    PageFaultCount: DWORD;
+    PeakWorkingSetSize: SIZE_T;
+    WorkingSetSize: SIZE_T;
+    QuotaPeakPagedPoolUsage: SIZE_T;
+    QuotaPagedPoolUsage: SIZE_T;
+    QuotaPeakNonPagedPoolUsage: SIZE_T;
+    QuotaNonPagedPoolUsage: SIZE_T;
+    PagefileUsage: SIZE_T;
+    PeakPagefileUsage: SIZE_T;
+    PrivateUsage: SIZE_T;
+    PrivateWorkingSetSize: SIZE_T;
+    SharedCommitUsage: UInt64;
+  end;
+
+const
+  // Basta para ler a memória de processo de outro usuário/integridade (o Winapi.Windows não tem).
+  PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+
+function K32GetProcessMemoryInfo(Process: THandle; ppsmemCounters: Pointer; cb: DWORD): BOOL;
+  stdcall; external kernel32;
+
+/// Memória privada em uso (o que a coluna "Memória" do Gerenciador de Tarefas mostra).
+/// 0 se o processo já terminou.
+function ProcessMemory(APid: Cardinal): UInt64;
+var
+  H: THandle;
+  C: TNecoMemCounters;
+  Own: Boolean;
+begin
+  Result := 0;
+  Own := APid = GetCurrentProcessId;
+  if Own then
+    H := GetCurrentProcess
+  else
+    H := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, APid);
+  if H = 0 then
+    Exit;
+  try
+    FillChar(C, SizeOf(C), 0);
+    C.cb := SizeOf(C);
+    if K32GetProcessMemoryInfo(H, @C, C.cb) then
+      Result := C.PrivateWorkingSetSize
+    else
+    begin
+      // Windows antigo: só a versão EX (sem o conjunto de trabalho privado).
+      C.cb := DWORD(PByte(@C.PrivateWorkingSetSize) - PByte(@C));
+      if K32GetProcessMemoryInfo(H, @C, C.cb) then
+        Result := C.PrivateUsage;
+    end;
+  finally
+    if not Own then
+      CloseHandle(H);
+  end;
+end;
+
+procedure AddProcess(var AReport: TNecoMemoryReport; AKind: COREWEBVIEW2_PROCESS_KIND;
+  ABytes: UInt64);
+begin
+  Inc(AReport.Processes);
+  case AKind of
+    COREWEBVIEW2_PROCESS_KIND_BROWSER:
+      Inc(AReport.Browser, ABytes);
+    COREWEBVIEW2_PROCESS_KIND_RENDERER:
+      Inc(AReport.Pages, ABytes);
+    COREWEBVIEW2_PROCESS_KIND_GPU:
+      Inc(AReport.Gpu, ABytes);
+  else
+    Inc(AReport.Other, ABytes);
+  end;
+end;
+
+function NewReport: TNecoMemoryReport;
+begin
+  Result := Default(TNecoMemoryReport);
+  Result.App := ProcessMemory(GetCurrentProcessId);
+  Result.Processes := 1;
+end;
+
+/// Id do quadro principal da página a que este quadro pertence (sobe pelos pais).
+/// 0 se o motor não informa.
+function TopFrameId(const AFrame: ICoreWebView2FrameInfo): Cardinal;
+var
+  F, P: ICoreWebView2FrameInfo;
+  F2: ICoreWebView2FrameInfo2;
+  Id: SYSUINT;
+  N: Integer;
+begin
+  Result := 0;
+  F := AFrame;
+  for N := 1 to 64 do // iframe dentro de iframe: o teto só evita laço com dado estranho
+  begin
+    if not Supports(F, ICoreWebView2FrameInfo2, F2) then
+      Exit;
+    P := nil;
+    if Failed(F2.Get_ParentFrameInfo(P)) or (P = nil) then
+    begin
+      if Succeeded(F2.Get_FrameId(Id)) then
+        Result := Id;
+      Exit;
+    end;
+    F := P;
+  end;
+end;
+
+{ TNecoWV2MemoryReq }
+
+constructor TNecoWV2MemoryReq.Create(const ACallback: TNecoMemoryCallback);
+begin
+  inherited Create;
+  FCallback := ACallback;
+end;
+
+function TNecoWV2MemoryReq.Invoke(errorCode: HResult;
+  const AInfos: ICoreWebView2ProcessExtendedInfoCollection): HResult;
+var
+  R: TNecoMemoryReport;
+  ByFrame: TDictionary<Cardinal, TNecoWV2Engine>;
+  ByEngine: TDictionary<TNecoWV2Engine, Integer>; // índice em R.Tabs
+  Owners: TList<TNecoWV2Engine>;
+  E: TNecoWV2Engine;
+  W20: ICoreWebView2_20;
+  Ext: ICoreWebView2ProcessExtendedInfo;
+  Info: ICoreWebView2ProcessInfo;
+  Frames: ICoreWebView2FrameInfoCollection;
+  It: ICoreWebView2FrameInfoCollectionIterator;
+  Frame: ICoreWebView2FrameInfo;
+  Kind: COREWEBVIEW2_PROCESS_KIND;
+  Count: SYSUINT;
+  I: Integer;
+  FrameId: SYSUINT;
+  Pid: SYSINT;
+  Has: Integer;
+  Bytes: UInt64;
+  K: Integer;
+begin
+  Result := S_OK;
+  // App fechando: GEnv já foi solto e quem pediu pode não existir mais.
+  if (GEnv = nil) or (GEngines = nil) or not Assigned(FCallback) then
+    Exit;
+  try
+    R := NewReport;
+    ByFrame := TDictionary<Cardinal, TNecoWV2Engine>.Create;
+    ByEngine := TDictionary<TNecoWV2Engine, Integer>.Create;
+    Owners := TList<TNecoWV2Engine>.Create;
+    try
+      // Quadro principal de cada aba -> aba.
+      for E in GEngines do
+        if not E.FClosed and Supports(E.FWebView, ICoreWebView2_20, W20) and
+          Succeeded(W20.Get_FrameId(FrameId)) then
+          ByFrame.AddOrSetValue(FrameId, E);
+
+      if Succeeded(errorCode) and (AInfos <> nil) and Succeeded(AInfos.Get_Count(Count)) then
+        for I := 0 to Integer(Count) - 1 do
+        begin
+          Ext := nil;
+          Info := nil;
+          if Failed(AInfos.GetValueAtIndex(I, Ext)) or (Ext = nil) or
+            Failed(Ext.Get_ProcessInfo(Info)) or (Info = nil) or
+            Failed(Info.Get_ProcessId(Pid)) or Failed(Info.Get_Kind(Kind)) then
+            Continue;
+          Bytes := ProcessMemory(Cardinal(Pid));
+          AddProcess(R, Kind, Bytes);
+          if Kind <> COREWEBVIEW2_PROCESS_KIND_RENDERER then
+            Continue;
+
+          // Quais abas este processo desenha (um site aberto em duas abas divide o processo).
+          Owners.Clear;
+          Frames := nil;
+          It := nil;
+          if Succeeded(Ext.Get_AssociatedFrameInfos(Frames)) and (Frames <> nil) and
+            Succeeded(Frames.GetIterator(It)) and (It <> nil) then
+            while Succeeded(It.Get_hasCurrent(Has)) and (Has <> 0) do
+            begin
+              Frame := nil;
+              if Succeeded(It.GetCurrent(Frame)) and (Frame <> nil) and
+                ByFrame.TryGetValue(TopFrameId(Frame), E) and not Owners.Contains(E) then
+                Owners.Add(E);
+              if Failed(It.MoveNext(Has)) or (Has = 0) then
+                Break;
+            end;
+          for E in Owners do
+          begin
+            if not ByEngine.TryGetValue(E, K) then
+            begin
+              K := Length(R.Tabs);
+              SetLength(R.Tabs, K + 1);
+              R.Tabs[K].Engine := E;
+              R.Tabs[K].Bytes := 0;
+              R.Tabs[K].SharedWith := 1;
+              ByEngine.Add(E, K);
+            end;
+            Inc(R.Tabs[K].Bytes, Bytes div UInt64(Owners.Count));
+            if Owners.Count > R.Tabs[K].SharedWith then
+              R.Tabs[K].SharedWith := Owners.Count;
+          end;
+        end;
+    finally
+      Owners.Free;
+      ByEngine.Free;
+      ByFrame.Free;
+    end;
+    FCallback(R);
+  except
+    // Nenhuma exceção atravessa a fronteira COM.
+  end;
+  FCallback := nil;
+end;
+
 { API }
+
+procedure NecoWV2QueryMemory(const ACallback: TNecoMemoryCallback);
+var
+  E8: ICoreWebView2Environment8;
+  E13: ICoreWebView2Environment13;
+  Col: ICoreWebView2ProcessInfoCollection;
+  Info: ICoreWebView2ProcessInfo;
+  Count: SYSUINT;
+  I: Integer;
+  Pid: SYSINT;
+  Kind: COREWEBVIEW2_PROCESS_KIND;
+  R: TNecoMemoryReport;
+begin
+  if not Assigned(ACallback) then
+    Exit;
+  // Com a lista estendida dá para saber qual processo é de qual aba.
+  if Supports(GEnv, ICoreWebView2Environment13, E13) and
+    Succeeded(E13.GetProcessExtendedInfos(TNecoWV2MemoryReq.Create(ACallback))) then
+    Exit;
+  // Runtime mais antigo: só o total, sem o detalhe por aba.
+  R := NewReport;
+  if Supports(GEnv, ICoreWebView2Environment8, E8) and Succeeded(E8.GetProcessInfos(Col)) and
+    (Col <> nil) and Succeeded(Col.Get_Count(Count)) then
+    for I := 0 to Integer(Count) - 1 do
+    begin
+      Info := nil;
+      if Succeeded(Col.GetValueAtIndex(I, Info)) and (Info <> nil) and
+        Succeeded(Info.Get_ProcessId(Pid)) and Succeeded(Info.Get_Kind(Kind)) then
+        AddProcess(R, Kind, ProcessMemory(Cardinal(Pid)));
+    end;
+  ACallback(R);
+end;
 
 procedure NecoWV2Setup(const AOptions: TNecoWV2Options);
 begin

@@ -24,6 +24,9 @@ procedure NecoEngineSetup(const AConfig: TNecoEngineConfig);
 function NecoCreateEngine(AForm: TCommonCustomForm): INecoEngine;
 /// Fecha todos os motores e downloads. Chamar ao fechar o app.
 procedure NecoEngineShutdown;
+/// Mede a memória do navegador inteiro (o exe e todos os processos do motor).
+/// A resposta chega depois, na thread principal.
+procedure NecoEngineQueryMemory(const ACallback: TNecoMemoryCallback);
 
 implementation
 
@@ -65,6 +68,13 @@ procedure NecoEngineShutdown;
 begin
 {$IFDEF MSWINDOWS}
   NecoWV2Shutdown;
+{$ENDIF}
+end;
+
+procedure NecoEngineQueryMemory(const ACallback: TNecoMemoryCallback);
+begin
+{$IFDEF MSWINDOWS}
+  NecoWV2QueryMemory(ACallback);
 {$ENDIF}
 end;
 

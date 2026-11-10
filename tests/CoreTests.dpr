@@ -199,6 +199,56 @@ begin
   end;
 end;
 
+procedure TestarSugestoes(const APasta: string);
+var
+  H, H2: TNecoHistory;
+  S: TArray<TNecoSuggestion>;
+  Arq: string;
+begin
+  Writeln('Sugestoes da barra');
+  Arq := TPath.Combine(APasta, 'history-sugestoes.json');
+  H := TNecoHistory.Create;
+  H2 := TNecoHistory.Create;
+  try
+    H.AddTyped('docusign login');
+    H.AddTyped('  ');
+    Check(H.TypedCount = 1, 'busca vazia nao entra');
+    H.AddTyped('DocuSign Login');
+    Check((H.TypedCount = 1) and (H.Typed[0].Count = 2), 'mesma busca so conta de novo');
+    H.AddTyped('docker compose');
+    H.AddTyped('docker compose');
+    H.AddTyped('docker compose');
+    H.AddTyped('Ação de graças');
+    H.Add('https://duckduckgo.com/?q=docusign', 'docusign at DuckDuckGo');
+    H.Add('https://www.docusign.com/pt-br', 'DocuSign Brasil');
+    H.Add('https://example.com/', 'Documentos do time');
+
+    S := H.Suggest('doc');
+    Check(Length(S) = 4, 'buscas e paginas que casam (sem a de resultado de busca)');
+    if Length(S) = 4 then
+    begin
+      CheckEq(S[0].Text, 'docker compose', 'a busca mais repetida vem primeiro');
+      CheckEq(S[1].Text, 'DocuSign Login', 'grafia mais recente');
+      Check(S[2].Kind = nskPage, 'depois as paginas');
+      CheckEq(S[2].Text, 'https://example.com/', 'pagina pelo titulo, mais recente antes');
+      CheckEq(S[3].Text, 'https://www.docusign.com/pt-br', 'pagina pelo endereco sem www');
+    end;
+    S := H.Suggest('acao');
+    Check((Length(S) = 1) and (S[0].Text = 'Ação de graças'), 'sem diferenciar acento');
+    Check(Length(H.Suggest('doc', 2)) = 2, 'respeita o maximo');
+    Check(Length(H.Suggest('')) = 0, 'texto vazio nao sugere');
+
+    H.SaveToFile(Arq);
+    H2.LoadFromFile(Arq);
+    Check((H2.TypedCount = 3) and (Length(H2.Suggest('doc')) = 4), 'buscas vao e voltam do arquivo');
+    H2.Clear;
+    Check((H2.TypedCount = 0) and (H2.Count = 0), 'limpar apaga visitas e buscas');
+  finally
+    H.Free;
+    H2.Free;
+  end;
+end;
+
 procedure TestarSettings(const APasta: string);
 var
   SU: TArray<string>;
@@ -277,6 +327,7 @@ begin
       TestarBlocklist;
       TestarBookmarks(Pasta);
       TestarHistory(Pasta);
+      TestarSugestoes(Pasta);
       TestarSettings(Pasta);
       TestarFavicons(Pasta);
     except

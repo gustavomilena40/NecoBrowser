@@ -51,10 +51,28 @@ type
     FAddressIcon: TPath;
     FAddress: TEdit;
     FToolRight: TLayout;
-    FBtnShield: TNecoIconButton;
+    // À direita da barra só ficam memória, a seta do menu e configurações.
+    FBtnMenu: TNecoIconButton;
     FShieldBadge: TRectangle;
     FShieldBadgeText: TLabel;
-    FBtnBookmarks, FBtnHistory, FBtnDownloads, FBtnTheme, FBtnSettings, FBtnOpen: TNecoIconButton;
+    FBtnSettings: TNecoIconButton;
+    // menu da seta (janela própria, como as sugestões: fica por cima da página)
+    FMenu: TPopup;
+    FMenuBox: TRectangle;
+    // medidor de memória: o exe mais todos os processos do motor (que o Windows mostra
+    // num grupo separado, "Gerenciador WebView2")
+    FBtnMemory: TNecoIconButton;
+    FMemTimer: TTimer;
+    FMemAskedAt: Cardinal; // 0 = nenhuma medição em curso
+    // sugestões da barra (buscas digitadas e páginas do histórico). O TPopup é uma janela
+    // própria: fica por cima da página nativa e não tira o foco da barra.
+    FSuggest: TPopup;
+    FSuggestBox: TRectangle;
+    FSuggestRows: TList<TRectangle>;
+    FSuggestItems: TArray<TNecoSuggestion>;
+    FSuggestIndex: Integer;   // -1 = nenhuma escolhida (vale o que foi digitado)
+    FSuggestTyped: string;    // o que a pessoa digitou (volta ao sair da lista com as setas)
+    FSuggestFilling: Boolean; // a barra está sendo preenchida pela lista, não pela pessoa
     // Primeira janela com este perfil: só ela grava e restaura as abas da sessão.
     FSessionOwner: Boolean;
     FBtnStar: TNecoIconButton;
@@ -91,6 +109,11 @@ type
     procedure StyleTab(ATab: TNecoTab);
     procedure StyleTabs;
     procedure UpdateTabTitle(ATab: TNecoTab);
+    /// Ícone do site na aba: o que o motor mandou ou, na aba ainda não carregada, o guardado.
+    procedure UpdateTabIcon(ATab: TNecoTab);
+    procedure MemoryTick(Sender: TObject);
+    procedure MemoryClick(Sender: TObject);
+    procedure ShowMemory(const AReport: TNecoMemoryReport);
     procedure TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
       X, Y: Single);
     procedure TabButtonHover(Sender: TObject);
@@ -158,11 +181,28 @@ type
     procedure AddressKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
     procedure AddressEnter(Sender: TObject);
     procedure AddressExit(Sender: TObject);
+    procedure AddressTyping(Sender: TObject);
     procedure FocusAddress;
+    /// Abre o que está na barra (endereço ou busca) e guarda a busca para sugerir depois.
+    procedure GoAddress;
+    // sugestões da barra
+    procedure BuildSuggest;
+    procedure ShowSuggestions;
+    procedure HideSuggestions;
+    procedure MoveSuggestion(ADelta: Integer);
+    procedure StyleSuggestRows;
+    procedure SuggestRowClick(Sender: TObject);
+    procedure SuggestRowEnter(Sender: TObject);
     // bloqueador
     function AddToolButton(const AIcon, AHint: string; AOnClick: TNotifyEvent): TNecoIconButton;
     procedure UpdateShield;
     procedure ShieldClick(Sender: TObject);
+    // menu da seta
+    procedure BuildMenu;
+    procedure MenuClick(Sender: TObject);
+    procedure HideMenu;
+    procedure MenuRowClick(Sender: TObject);
+    procedure MenuRowHover(Sender: TObject);
     // painéis, downloads e favoritos
     procedure BuildPanels;
     procedure TogglePanel(APanel: TNecoSidePanel);
@@ -360,6 +400,8 @@ begin
   if FSelfTest <> nil then
     FSelfTest.Enabled := False;
   FProgressTimer.Enabled := False;
+  FMemTimer.Enabled := False;
+  HideSuggestions;
   FPanelDownloads.Shutdown;
   FBookmarks.OnChange := nil;
   if FFull then
@@ -376,6 +418,7 @@ begin
   NecoEngineShutdown;
   FreeAndNil(FTabs);
   FreeAndNil(FClosed);
+  FreeAndNil(FSuggestRows); // só a lista: as linhas são do form
   FreeAndNil(FHistory);
   FreeAndNil(FBookmarks);
   FreeAndNil(FBlocklist);
@@ -468,6 +511,7 @@ begin
   FToolbar.Stroke.Kind := TBrushKind.None;
   FToolbar.Position.Y := 100;
   BuildToolbar;
+  BuildSuggest;
 
   FBookmarkBar := TNecoBookmarkBar.Create(Self);
   FBookmarkBar.Parent := Self;
@@ -697,12 +741,23 @@ begin
   X.IconSize := 12;
   X.TagObject := ATab;
 
+  // Ícone do site, como nas pílulas dos favoritos (16x16, à esquerda do título).
+  ATab.Icon := TImage.Create(Self);
+  ATab.Icon.Parent := B;
+  ATab.Icon.Align := TAlignLayout.Left;
+  ATab.Icon.Width := 16;
+  ATab.Icon.Margins.Rect := TRectF.Create(12, (CTabHeight - 16) / 2, 0, (CTabHeight - 16) / 2);
+  ATab.Icon.WrapMode := TImageWrapMode.Fit;
+  ATab.Icon.HitTest := False;
+  ATab.Icon.Visible := False;
+
   ATab.TitleLabel := NecoNewLabel(Self, B, '', 12.5);
   ATab.TitleLabel.Align := TAlignLayout.Client;
   ATab.TitleLabel.Margins.Rect := TRectF.Create(12, 0, 4, 0);
   ATab.Button := B;
   ATab.CloseButton := X;
   UpdateTabTitle(ATab);
+  UpdateTabIcon(ATab);
 end;
 
 procedure TFormMain.StyleTab(ATab: TNecoTab);
@@ -730,13 +785,131 @@ begin
     StyleTab(T);
 end;
 
+function NecoFormatBytes(ABytes: UInt64): string;
+var
+  MB: Double;
+begin
+  MB := ABytes / (1024 * 1024);
+  if MB >= 1000 then
+    Result := FormatFloat('0.0', MB / 1024) + ' GB'
+  else
+    Result := FormatFloat('0', MB) + ' MB';
+end;
+
 procedure TFormMain.UpdateTabTitle(ATab: TNecoTab);
+var
+  H: string;
 begin
   if (ATab = nil) or (ATab.TitleLabel = nil) then
     Exit;
   ATab.TitleLabel.Text := ATab.DisplayTitle;
-  ATab.Button.Hint := ATab.DisplayTitle;
+  H := ATab.DisplayTitle;
+  if ATab.MemoryBytes > 0 then
+  begin
+    H := H + sLineBreak + 'Memória: ' + NecoFormatBytes(ATab.MemoryBytes);
+    if ATab.MemoryShared > 1 then
+      H := H + Format(' (processo dividido com %d abas do mesmo site)', [ATab.MemoryShared]);
+  end;
+  ATab.Button.Hint := H;
   ATab.Button.ShowHint := True;
+end;
+
+procedure TFormMain.UpdateTabIcon(ATab: TNecoTab);
+var
+  S: TBytesStream;
+  F: string;
+  Ok: Boolean;
+begin
+  if (ATab = nil) or (ATab.Icon = nil) then
+    Exit;
+  Ok := False;
+  try
+    if Length(ATab.Favicon) > 0 then
+    begin
+      S := TBytesStream.Create(ATab.Favicon);
+      try
+        ATab.Icon.Bitmap.LoadFromStream(S);
+        Ok := True;
+      finally
+        S.Free;
+      end;
+    end
+    else if ATab.IsLazy then
+    begin
+      // Aba restaurada que ainda não carregou: usa o ícone guardado (sites dos favoritos).
+      F := NecoFaviconFile(FaviconDir, ATab.Url);
+      if (F <> '') and FileExists(F) then
+      begin
+        ATab.Icon.Bitmap.LoadFromFile(F);
+        Ok := True;
+      end;
+    end;
+  except
+    Ok := False; // PNG estragado: fica sem ícone
+  end;
+  ATab.Icon.Visible := Ok;
+  if Ok then
+    ATab.TitleLabel.Margins.Left := 8
+  else
+    ATab.TitleLabel.Margins.Left := 12;
+end;
+
+procedure TFormMain.MemoryTick(Sender: TObject);
+begin
+  if FShuttingDown or NecoFrameIsMinimized(Self) then
+    Exit;
+  // Uma medição por vez; se a resposta se perdeu, tenta de novo depois de 10 s.
+  if (FMemAskedAt <> 0) and (TThread.GetTickCount - FMemAskedAt < 10000) then
+    Exit;
+  FMemAskedAt := TThread.GetTickCount;
+  if FMemAskedAt = 0 then
+    FMemAskedAt := 1;
+  NecoEngineQueryMemory(
+    procedure(const AReport: TNecoMemoryReport)
+    begin
+      FMemAskedAt := 0;
+      if not FShuttingDown then
+        ShowMemory(AReport);
+    end);
+end;
+
+procedure TFormMain.ShowMemory(const AReport: TNecoMemoryReport);
+var
+  T: TNecoTab;
+  I: Integer;
+  H: string;
+begin
+  FBtnMemory.CaptionText := NecoFormatBytes(AReport.Total);
+  H := 'Memória do NecoBrowser: ' + NecoFormatBytes(AReport.Total) + ' no total' + sLineBreak +
+    '  Páginas: ' + NecoFormatBytes(AReport.Pages) + sLineBreak +
+    '  Motor (Gerenciador WebView2): ' + NecoFormatBytes(AReport.Browser) + sLineBreak +
+    '  Vídeo (GPU): ' + NecoFormatBytes(AReport.Gpu) + sLineBreak +
+    '  Rede, áudio e outros: ' + NecoFormatBytes(AReport.Other) + sLineBreak +
+    '  Janela do navegador: ' + NecoFormatBytes(AReport.App) + sLineBreak +
+    Format('%d processos. Passe o mouse numa aba para ver a dela; ' +
+      'clique aqui para ver página por página.', [AReport.Processes]);
+  FBtnMemory.Hint := H;
+
+  // Memória por aba, no balão de cada uma.
+  for T in FTabs do
+  begin
+    T.MemoryBytes := 0;
+    T.MemoryShared := 1;
+    for I := 0 to High(AReport.Tabs) do
+      if AReport.Tabs[I].Engine = T.Engine then
+      begin
+        T.MemoryBytes := AReport.Tabs[I].Bytes;
+        T.MemoryShared := AReport.Tabs[I].SharedWith;
+        Break;
+      end;
+    UpdateTabTitle(T);
+  end;
+end;
+
+procedure TFormMain.MemoryClick(Sender: TObject);
+begin
+  if (FActive <> nil) and (FActive.Engine <> nil) then
+    FActive.Engine.OpenTaskManager;
 end;
 
 procedure TFormMain.TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
@@ -914,10 +1087,26 @@ begin
   FToolRight.Padding.Rect := TRectF.Create(0, 6, 8, 6);
   FToolRight.Width := 8;
 
-  FBtnShield := AddToolButton(ICO_ESCUDO, '', ShieldClick);
-  // Selo com o número de bloqueados, no canto do escudo (como os selos de extensão do Chrome).
+  // Medidor de memória: botão largo com texto, antes dos de ícone.
+  FBtnMemory := NecoNewButton(Self, FToolRight, ICO_MEMORIA, '', MemoryClick);
+  FBtnMemory.Align := TAlignLayout.Left;
+  FBtnMemory.Margins.Left := 2;
+  FBtnMemory.Position.X := FToolRight.Width;
+  FBtnMemory.Width := 96;
+  FBtnMemory.IconSize := 16;
+  FBtnMemory.CaptionText := '… MB';
+  FBtnMemory.Hint := 'Memória do NecoBrowser (medindo...)';
+  FBtnMemory.ShowHint := True;
+  FToolRight.Width := FToolRight.Width + FBtnMemory.Width + 2;
+  FMemTimer := TTimer.Create(Self);
+  FMemTimer.Interval := 2000;
+  FMemTimer.OnTimer := MemoryTick;
+
+  // Bloqueador, favoritos, histórico, downloads, abrir arquivo e tema ficam no menu da seta.
+  FBtnMenu := AddToolButton(ICO_SETA_BAIXO, 'Mais opções', MenuClick);
+  // Selo com o número de bloqueados, no canto da seta (como os selos de extensão do Chrome).
   FShieldBadge := TRectangle.Create(Self);
-  FShieldBadge.Parent := FBtnShield;
+  FShieldBadge.Parent := FBtnMenu;
   FShieldBadge.HitTest := False;
   FShieldBadge.Stroke.Kind := TBrushKind.None;
   FShieldBadge.XRadius := 6;
@@ -928,12 +1117,8 @@ begin
   FShieldBadgeText.TextSettings.HorzAlign := TTextAlign.Center;
   FShieldBadgeText.TextSettings.Font.Style := [TFontStyle.fsBold];
   FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
-  FBtnBookmarks := AddToolButton(ICO_MARCADOR, 'Favoritos (Ctrl+Shift+O)', BookmarksClick);
-  FBtnHistory := AddToolButton(ICO_HISTORICO, 'Histórico (Ctrl+H)', HistoryClick);
-  FBtnDownloads := AddToolButton(ICO_BAIXAR, 'Downloads (Ctrl+J)', DownloadsClick);
-  FBtnOpen := AddToolButton(ICO_ARQUIVO, 'Abrir arquivo: PDF, texto, imagem... (Ctrl+O)', OpenFileClick);
-  FBtnTheme := AddToolButton(ICO_SOL, '', ThemeClick);
   FBtnSettings := AddToolButton(ICO_AJUSTES, 'Configurações', SettingsClick);
+  BuildMenu;
 
   FAddressBox := TRectangle.Create(Self);
   FAddressBox.Parent := FToolbar;
@@ -969,6 +1154,7 @@ begin
   FAddress.OnKeyDown := AddressKeyDown;
   FAddress.OnEnter := AddressEnter;
   FAddress.OnExit := AddressExit;
+  FAddress.OnChangeTracking := AddressTyping;
 
   FBtnStar := NecoNewButton(Self, FAddressBox, ICO_ESTRELA, 'Favoritar esta página (Ctrl+D)', StarClick);
   FBtnStar.Align := TAlignLayout.Right;
@@ -1003,24 +1189,11 @@ begin
   FBtnBack.Restyle;
   FBtnForward.Restyle;
   FBtnReload.Restyle;
+  FBtnMemory.Restyle;
   UpdateShield;
-  FBtnBookmarks.Restyle;
-  FBtnHistory.Restyle;
-  FBtnOpen.Restyle;
-  FBtnDownloads.Restyle;
+  FBtnMenu.Restyle;
   FBtnSettings.Restyle;
-  // O botão mostra o tema para onde ele leva.
-  if CurrentTheme = ntDark then
-  begin
-    FBtnTheme.IconData := ICO_SOL;
-    FBtnTheme.Hint := 'Tema claro';
-  end
-  else
-  begin
-    FBtnTheme.IconData := ICO_LUA;
-    FBtnTheme.Hint := 'Tema escuro';
-  end;
-  FBtnTheme.Restyle;
+  HideMenu; // as linhas pegam a cor na montagem; reabre já com o tema novo
   UpdatePanelButtons;
   UpdateStar;
   FPanelDownloads.Restyle;
@@ -1147,6 +1320,7 @@ begin
   // fora de qualquer evento desses controles (ForceQueue).
   B := ATab.Button;
   ATab.Button := nil;
+  ATab.Icon := nil;
   ATab.TitleLabel := nil;
   ATab.CloseButton := nil;
   B.Free;
@@ -1169,7 +1343,10 @@ procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
 begin
   // O título aparece na faixa para todas as abas, não só a ativa.
   if AChange = tcFavicon then
+  begin
+    UpdateTabIcon(TNecoTab(Sender));
     StoreFavicon(TNecoTab(Sender));
+  end;
   if AChange = tcTitle then
   begin
     UpdateTabTitle(TNecoTab(Sender));
@@ -1248,6 +1425,8 @@ end;
 
 procedure TFormMain.TabPageFocus(Sender: TObject);
 begin
+  // Clique na página (outra janela nativa): o FMX não fecha o menu sozinho.
+  HideMenu;
   if FAddress.IsFocused then
     FAddress.ResetFocus;
 end;
@@ -1464,18 +1643,37 @@ end;
 
 procedure TFormMain.AddressKeyDown(Sender: TObject; var Key: Word; var KeyChar: WideChar;
   Shift: TShiftState);
-var
-  U: string;
 begin
   if Key = vkReturn then
   begin
     Key := 0;
-    U := NecoInputToUrl(FAddress.Text, FSettings.SearchEngine);
-    if (U = '') or (FActive = nil) then
-      Exit;
-    FActive.Navigate(U);
-    FAddress.ResetFocus;
-    FActive.Engine.Focus;
+    GoAddress;
+  end
+  else if (Key = vkDown) and FSuggest.IsOpen then
+  begin
+    Key := 0;
+    MoveSuggestion(1);
+  end
+  else if (Key = vkUp) and FSuggest.IsOpen then
+  begin
+    Key := 0;
+    MoveSuggestion(-1);
+  end
+  else if (Key = vkEscape) and FSuggest.IsOpen then
+  begin
+    // Primeiro Esc fecha a lista e devolve o que foi digitado; o segundo sai da barra.
+    Key := 0;
+    if FSuggestIndex >= 0 then
+    begin
+      FSuggestFilling := True;
+      try
+        FAddress.Text := FSuggestTyped;
+        FAddress.GoToTextEnd;
+      finally
+        FSuggestFilling := False;
+      end;
+    end;
+    HideSuggestions;
   end
   else if Key = vkEscape then
   begin
@@ -1501,8 +1699,227 @@ end;
 
 procedure TFormMain.AddressExit(Sender: TObject);
 begin
+  HideSuggestions;
   FAddressBox.Stroke.Color := Palette.FieldBorder;
   UpdateAddress;
+end;
+
+procedure TFormMain.AddressTyping(Sender: TObject);
+begin
+  if FSuggestFilling or FShuttingDown or not FAddress.IsFocused then
+    Exit;
+  FSuggestTyped := FAddress.Text;
+  ShowSuggestions;
+end;
+
+procedure TFormMain.GoAddress;
+var
+  T, U: string;
+begin
+  T := Trim(FAddress.Text);
+  HideSuggestions;
+  U := NecoInputToUrl(T, FSettings.SearchEngine);
+  if (U = '') or (FActive = nil) then
+    Exit;
+  // Só busca entra na lista de digitados; endereço já fica no histórico de páginas.
+  if U = NecoSearchUrl(T, FSettings.SearchEngine) then
+    FHistory.AddTyped(T);
+  FActive.Navigate(U);
+  FAddress.ResetFocus;
+  FActive.Engine.Focus;
+end;
+
+{ Sugestões da barra }
+
+const
+  CSuggestRowHeight = 34;
+  CSuggestMax = 8;
+
+procedure TFormMain.BuildSuggest;
+begin
+  FSuggestRows := TList<TRectangle>.Create;
+  FSuggestIndex := -1;
+  FSuggest := TPopup.Create(Self);
+  FSuggest.Parent := Self;
+  FSuggest.PlacementTarget := FAddressBox;
+  FSuggest.Placement := TPlacement.Bottom;
+  FSuggest.VerticalOffset := 4;
+  FSuggest.BorderWidth := 0;
+  FSuggest.AniDuration := 0;
+  FSuggestBox := TRectangle.Create(Self);
+  FSuggestBox.Parent := FSuggest;
+  FSuggestBox.Align := TAlignLayout.Contents;
+  FSuggestBox.XRadius := 10;
+  FSuggestBox.YRadius := 10;
+  FSuggestBox.Stroke.Thickness := 1;
+  FSuggestBox.Padding.Rect := TRectF.Create(4, 4, 4, 4);
+end;
+
+procedure TFormMain.ShowSuggestions;
+var
+  R: TRectangle;
+  Ico: FMX.Objects.TPath; // TPath sozinho é o do System.IOUtils aqui
+  L, D: TLabel;
+  S: TNecoSuggestion;
+  I: Integer;
+begin
+  if (FSuggest = nil) or (FSuggestRows = nil) then
+    Exit;
+  FSuggestItems := FHistory.Suggest(FSuggestTyped, CSuggestMax);
+  FSuggestIndex := -1;
+  if Length(FSuggestItems) = 0 then
+  begin
+    HideSuggestions;
+    Exit;
+  end;
+  // Refaz as linhas (fora de qualquer evento delas: vem da digitação na barra).
+  FSuggestBox.BeginUpdate;
+  try
+    for R in FSuggestRows do
+      R.Free;
+    FSuggestRows.Clear;
+    for I := 0 to High(FSuggestItems) do
+    begin
+      S := FSuggestItems[I];
+      R := TRectangle.Create(Self);
+      R.Parent := FSuggestBox;
+      R.SetBounds(4, 4 + I * CSuggestRowHeight, FAddressBox.Width - 8, CSuggestRowHeight);
+      R.Anchors := [TAnchorKind.akLeft, TAnchorKind.akTop, TAnchorKind.akRight];
+      R.XRadius := 6;
+      R.YRadius := 6;
+      R.Stroke.Kind := TBrushKind.None;
+      R.Fill.Kind := TBrushKind.Solid;
+      R.HitTest := True;
+      R.Tag := I;
+      R.OnClick := SuggestRowClick;
+      R.OnMouseEnter := SuggestRowEnter;
+
+      Ico := FMX.Objects.TPath.Create(Self);
+      Ico.Parent := R;
+      Ico.HitTest := False;
+      Ico.SetBounds(12, (CSuggestRowHeight - 16) / 2, 16, 16);
+      Ico.WrapMode := TPathWrapMode.Fit;
+      Ico.Fill.Kind := TBrushKind.None;
+      Ico.Stroke.Thickness := 1.8;
+      Ico.Stroke.Cap := TStrokeCap.Round;
+      Ico.Stroke.Join := TStrokeJoin.Round;
+      Ico.Stroke.Color := Palette.TextMuted;
+      if S.Kind = nskSearch then
+        Ico.Data.Data := ICO_LUPA
+      else
+        Ico.Data.Data := ICO_HISTORICO;
+
+      L := NecoNewLabel(Self, R, '', 13.5);
+      if (S.Kind = nskPage) and (S.Detail <> '') then
+      begin
+        // Página: título forte, endereço apagado à direita.
+        L.Text := S.Detail;
+        D := NecoNewLabel(Self, R, S.Text, 12, Palette.TextMuted);
+        D.Align := TAlignLayout.Right;
+        D.Width := Min(320, (FAddressBox.Width - 8) * 0.45);
+        D.Margins.Right := 12;
+        D.TextSettings.HorzAlign := TTextAlign.Trailing;
+      end
+      else
+        L.Text := S.Text;
+      L.Align := TAlignLayout.Client;
+      L.Margins.Rect := TRectF.Create(40, 0, 12, 0);
+      FSuggestRows.Add(R);
+    end;
+  finally
+    FSuggestBox.EndUpdate;
+  end;
+  FSuggestBox.Fill.Color := Palette.Toolbar;
+  FSuggestBox.Stroke.Color := Palette.FieldBorder;
+  StyleSuggestRows;
+  FSuggest.Width := FAddressBox.Width;
+  FSuggest.Height := 8 + Length(FSuggestItems) * CSuggestRowHeight;
+  // Width/Height não redimensionam a janela já aberta; PopupFormSize sim.
+  FSuggest.PopupFormSize := TSizeF.Create(FSuggest.Width, FSuggest.Height);
+  if not FSuggest.IsOpen then
+    FSuggest.Popup(False);
+end;
+
+procedure TFormMain.HideSuggestions;
+begin
+  FSuggestIndex := -1;
+  if (FSuggest <> nil) and FSuggest.IsOpen then
+    FSuggest.IsOpen := False;
+end;
+
+procedure TFormMain.StyleSuggestRows;
+var
+  I: Integer;
+  R: TRectangle;
+begin
+  if FSuggestRows = nil then
+    Exit;
+  for I := 0 to FSuggestRows.Count - 1 do
+  begin
+    R := FSuggestRows[I];
+    if I = FSuggestIndex then
+      R.Fill.Color := Palette.Hover
+    else
+      R.Fill.Color := TAlphaColors.Null;
+  end;
+end;
+
+procedure TFormMain.MoveSuggestion(ADelta: Integer);
+var
+  N: Integer;
+begin
+  N := Length(FSuggestItems);
+  if N = 0 then
+    Exit;
+  // Anda pela lista; passando do fim ou do começo, volta para o que foi digitado (-1).
+  FSuggestIndex := FSuggestIndex + ADelta;
+  if FSuggestIndex >= N then
+    FSuggestIndex := -1
+  else if FSuggestIndex < -1 then
+    FSuggestIndex := N - 1;
+  FSuggestFilling := True;
+  try
+    if FSuggestIndex >= 0 then
+      FAddress.Text := FSuggestItems[FSuggestIndex].Text
+    else
+      FAddress.Text := FSuggestTyped;
+    FAddress.GoToTextEnd;
+  finally
+    FSuggestFilling := False;
+  end;
+  StyleSuggestRows;
+end;
+
+procedure TFormMain.SuggestRowEnter(Sender: TObject);
+begin
+  FSuggestIndex := TControl(Sender).Tag;
+  StyleSuggestRows;
+end;
+
+procedure TFormMain.SuggestRowClick(Sender: TObject);
+var
+  T: string;
+  I: Integer;
+begin
+  I := TControl(Sender).Tag;
+  if (I < 0) or (I > High(FSuggestItems)) then
+    Exit;
+  T := FSuggestItems[I].Text;
+  // Fechar a lista dentro do clique de uma linha dela desmonta a janela com a pilha
+  // ainda nela (regra 5.3): abre depois.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown then
+        Exit;
+      FSuggestFilling := True;
+      try
+        FAddress.Text := T;
+      finally
+        FSuggestFilling := False;
+      end;
+      GoAddress;
+    end);
 end;
 
 procedure TFormMain.FocusAddress;
@@ -1586,10 +2003,9 @@ procedure TFormMain.UpdatePanelButtons;
   end;
 
 begin
-  Mark(FBtnBookmarks, FPanelBookmarks.Visible);
-  Mark(FBtnDownloads, FPanelDownloads.Visible);
+  // A seta fica marcada quando o painel aberto é um dos do menu.
+  Mark(FBtnMenu, FPanelBookmarks.Visible or FPanelDownloads.Visible or FPanelHistory.Visible);
   Mark(FBtnSettings, FPanelSettings.Visible);
-  Mark(FBtnHistory, FPanelHistory.Visible);
 end;
 
 procedure TFormMain.BookmarksClick(Sender: TObject);
@@ -1978,26 +2394,22 @@ var
   N: Integer;
   S: string;
 begin
-  if FBtnShield = nil then
+  if FBtnMenu = nil then
     Exit;
   N := 0;
   if FActive <> nil then
     N := FActive.BlockedCount;
   if BlockerOn then
   begin
-    FBtnShield.IconData := ICO_ESCUDO;
-    FBtnShield.IconColor := Palette.Shield;
     if N = 1 then
-      S := '1 anúncio ou rastreador barrado nesta página.'
+      S := '1 anúncio ou rastreador barrado nesta página'
     else
-      S := Format('%d anúncios e rastreadores barrados nesta página.', [N]);
-    FBtnShield.Hint := 'Bloqueador ligado: ' + S + ' Clique para desligar.';
+      S := Format('%d anúncios e rastreadores barrados nesta página', [N]);
+    FBtnMenu.Hint := 'Mais opções' + sLineBreak + 'Bloqueador ligado: ' + S;
   end
   else
   begin
-    FBtnShield.IconData := ICO_ESCUDO_OFF;
-    FBtnShield.IconColor := Palette.TextMuted;
-    FBtnShield.Hint := 'Bloqueador desligado. Clique para ligar.';
+    FBtnMenu.Hint := 'Mais opções' + sLineBreak + 'Bloqueador desligado';
     N := 0;
   end;
   FShieldBadge.Visible := N > 0;
@@ -2028,6 +2440,191 @@ begin
   // Como as extensões de bloqueio: a página recarrega já com a nova regra.
   if (FActive <> nil) and (FActive.Url <> '') then
     FActive.Engine.Reload;
+end;
+
+{ Menu da seta }
+
+const
+  CMenuWidth = 280;
+  CMenuRowHeight = 36;
+  // Tag de cada linha do menu.
+  CMenuBlocker = 0;
+  CMenuBookmarks = 1;
+  CMenuHistory = 2;
+  CMenuDownloads = 3;
+  CMenuOpenFile = 4;
+  CMenuTheme = 5;
+
+procedure TFormMain.BuildMenu;
+begin
+  FMenu := TPopup.Create(Self);
+  FMenu.Parent := Self;
+  FMenu.PlacementTarget := FBtnMenu;
+  FMenu.Placement := TPlacement.Bottom;
+  // Alinha a borda direita do menu com a da seta (ela fica perto da borda da janela).
+  FMenu.HorizontalOffset := CButtonSize - CMenuWidth;
+  FMenu.VerticalOffset := 4;
+  FMenu.BorderWidth := 0;
+  FMenu.AniDuration := 0;
+  FMenuBox := TRectangle.Create(Self);
+  FMenuBox.Parent := FMenu;
+  FMenuBox.Align := TAlignLayout.Contents;
+  FMenuBox.XRadius := 10;
+  FMenuBox.YRadius := 10;
+  FMenuBox.Stroke.Thickness := 1;
+end;
+
+procedure TFormMain.HideMenu;
+begin
+  if (FMenu <> nil) and FMenu.IsOpen then
+    FMenu.IsOpen := False;
+end;
+
+procedure TFormMain.MenuClick(Sender: TObject);
+var
+  Y: Single;
+  N: Integer;
+
+  procedure AddRow(ATag: Integer; const AIcon, AText, ARight: string; AIconColor: TAlphaColor;
+    AMarked: Boolean);
+  var
+    R: TRectangle;
+    Ico: FMX.Objects.TPath;
+    L: TLabel;
+  begin
+    R := TRectangle.Create(Self);
+    R.Parent := FMenuBox;
+    R.SetBounds(4, Y, CMenuWidth - 8, CMenuRowHeight);
+    R.XRadius := 6;
+    R.YRadius := 6;
+    R.Stroke.Kind := TBrushKind.None;
+    R.Fill.Kind := TBrushKind.Solid;
+    // Painel aberto fica marcado, como os botões faziam.
+    if AMarked then
+      R.Fill.Color := Palette.Pressed
+    else
+      R.Fill.Color := TAlphaColors.Null;
+    R.TagFloat := Ord(AMarked); // a cor de volta depois do mouse
+    R.HitTest := True;
+    R.Tag := ATag;
+    R.OnClick := MenuRowClick;
+    R.OnMouseEnter := MenuRowHover;
+    R.OnMouseLeave := MenuRowHover;
+
+    Ico := FMX.Objects.TPath.Create(Self);
+    Ico.Parent := R;
+    Ico.HitTest := False;
+    Ico.SetBounds(12, (CMenuRowHeight - 18) / 2, 18, 18);
+    Ico.WrapMode := TPathWrapMode.Fit;
+    Ico.Fill.Kind := TBrushKind.None;
+    Ico.Stroke.Thickness := 1.8;
+    Ico.Stroke.Cap := TStrokeCap.Round;
+    Ico.Stroke.Join := TStrokeJoin.Round;
+    Ico.Stroke.Color := AIconColor;
+    Ico.Data.Data := AIcon;
+
+    if ARight <> '' then
+    begin
+      L := NecoNewLabel(Self, R, ARight, 12, Palette.TextMuted);
+      L.Align := TAlignLayout.Right;
+      L.Width := 110;
+      L.Margins.Right := 12;
+      L.TextSettings.HorzAlign := TTextAlign.Trailing;
+    end;
+    L := NecoNewLabel(Self, R, AText, 13.5);
+    L.Align := TAlignLayout.Client;
+    L.Margins.Rect := TRectF.Create(42, 0, 8, 0);
+    Y := Y + CMenuRowHeight;
+  end;
+
+var
+  C: TFmxObject;
+begin
+  if FMenu.IsOpen then
+  begin
+    HideMenu;
+    Exit;
+  end;
+  HideSuggestions;
+  // Monta na hora: estado do bloqueador, painel aberto e tema mudam.
+  FMenuBox.BeginUpdate;
+  try
+    while FMenuBox.ChildrenCount > 0 do
+    begin
+      C := FMenuBox.Children[FMenuBox.ChildrenCount - 1];
+      C.Free;
+    end;
+    Y := 4;
+    N := 0;
+    if FActive <> nil then
+      N := FActive.BlockedCount;
+    if BlockerOn then
+      AddRow(CMenuBlocker, ICO_ESCUDO, 'Bloqueador ligado', Format('%d barrados', [N]),
+        Palette.Shield, False)
+    else
+      AddRow(CMenuBlocker, ICO_ESCUDO_OFF, 'Bloqueador desligado', 'clique para ligar',
+        Palette.TextMuted, False);
+    AddRow(CMenuBookmarks, ICO_MARCADOR, 'Favoritos', 'Ctrl+Shift+O', Palette.Text,
+      FPanelBookmarks.Visible);
+    AddRow(CMenuHistory, ICO_HISTORICO, 'Histórico', 'Ctrl+H', Palette.Text, FPanelHistory.Visible);
+    AddRow(CMenuDownloads, ICO_BAIXAR, 'Downloads', 'Ctrl+J', Palette.Text, FPanelDownloads.Visible);
+    AddRow(CMenuOpenFile, ICO_ARQUIVO, 'Abrir arquivo', 'Ctrl+O', Palette.Text, False);
+    if CurrentTheme = ntDark then
+      AddRow(CMenuTheme, ICO_SOL, 'Tema claro', '', Palette.Text, False)
+    else
+      AddRow(CMenuTheme, ICO_LUA, 'Tema escuro', '', Palette.Text, False);
+  finally
+    FMenuBox.EndUpdate;
+  end;
+  FMenuBox.Fill.Color := Palette.Toolbar;
+  FMenuBox.Stroke.Color := Palette.FieldBorder;
+  FMenu.Width := CMenuWidth;
+  FMenu.Height := Y + 4;
+  FMenu.PopupFormSize := TSizeF.Create(FMenu.Width, FMenu.Height);
+  FMenu.Popup(False);
+end;
+
+procedure TFormMain.MenuRowHover(Sender: TObject);
+var
+  R: TRectangle;
+begin
+  R := TRectangle(Sender);
+  if R.IsMouseOver then
+    R.Fill.Color := Palette.Hover
+  else if R.TagFloat <> 0 then
+    R.Fill.Color := Palette.Pressed
+  else
+    R.Fill.Color := TAlphaColors.Null;
+end;
+
+procedure TFormMain.MenuRowClick(Sender: TObject);
+var
+  Acao: Integer;
+begin
+  Acao := TControl(Sender).Tag;
+  // Fechar o menu dentro do clique de uma linha dele desmonta a janela com a pilha
+  // ainda nela (regra 5.3); e "Abrir arquivo" abre um diálogo modal: tudo depois.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown then
+        Exit;
+      HideMenu;
+      case Acao of
+        CMenuBlocker:
+          ShieldClick(nil);
+        CMenuBookmarks:
+          BookmarksClick(nil);
+        CMenuHistory:
+          HistoryClick(nil);
+        CMenuDownloads:
+          DownloadsClick(nil);
+        CMenuOpenFile:
+          OpenFileClick(nil);
+        CMenuTheme:
+          ThemeClick(nil);
+      end;
+    end);
 end;
 
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
@@ -2115,6 +2712,14 @@ procedure TFormMain.KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftS
 begin
   // Antes do inherited: o FMX entrega a tecla ao controle com foco primeiro
   // e consome o Tab (inclusive Ctrl+Tab) para trocar o foco.
+  // Esc com o menu da seta aberto: fecha o menu (a janela dele não recebe teclas).
+  if (Key = vkEscape) and (FMenu <> nil) and FMenu.IsOpen then
+  begin
+    HideMenu;
+    Key := 0;
+    KeyChar := #0;
+    Exit;
+  end;
   if (Key <> 0) and HandleShortcut(Key, Shift) then
   begin
     Key := 0;
