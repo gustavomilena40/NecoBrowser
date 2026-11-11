@@ -253,6 +253,7 @@ type
     function AppIsMinimized: Boolean;
     function AppSessionWindow(out AWin: TNecoSessionWindow): Boolean;
     procedure AppClose;
+    procedure AppOpenUrl(const AUrl: string);
     procedure SelfTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
@@ -346,21 +347,9 @@ begin
 end;
 
 function TFormMain.CmdLineUrl: string;
-var
-  I: Integer;
 begin
   // NecoBrowser.exe <endereço ou busca>: abre isso no lugar da página inicial.
-  Result := '';
-  for I := 1 to ParamCount do
-    if not ParamStr(I).StartsWith('-') then
-    begin
-      // "Abrir com" do Explorer passa o caminho do arquivo (às vezes relativo).
-      if FileExists(ParamStr(I)) then
-        Exit(NecoPathToFileUrl(ExpandFileName(ParamStr(I))));
-      Result := NecoInputToUrl(ParamStr(I), FSettings.SearchEngine);
-      if Result <> '' then
-        Exit;
-    end;
+  Result := NecoArgsToUrl(NecoCmdLineArgs, FSettings.SearchEngine);
 end;
 
 function TFormMain.StartUrl: string;
@@ -436,6 +425,14 @@ begin
     end;
   NecoFrameGetPlacement(Self, AWin.Bounds, AWin.Maximized);
   Result := Length(AWin.Urls) > 0;
+end;
+
+procedure TFormMain.AppOpenUrl(const AUrl: string);
+begin
+  if FShuttingDown then
+    Exit;
+  NewTab(AUrl);
+  NecoFrameBringToFront(Self);
 end;
 
 procedure TFormMain.AppClose;

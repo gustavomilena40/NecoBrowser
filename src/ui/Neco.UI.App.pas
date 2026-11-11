@@ -13,7 +13,7 @@ interface
 uses
   System.SysUtils, System.Classes, System.Generics.Collections, FMX.Types,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
-  Neco.Core.Updater, Neco.Core.AdExtension, Neco.Engine.Intf, Neco.UI.Settings;
+  Neco.Core.Updater, Neco.Core.AdExtension, Neco.Core.Url, Neco.Engine.Intf, Neco.UI.Settings;
 
 type
   /// O que a janela faz quando algo do app muda. Implementada pela TFormMain. Sem contagem
@@ -36,6 +36,8 @@ type
     function AppSessionWindow(out AWin: TNecoSessionWindow): Boolean;
     /// O app vai fechar todas as janelas (Sair, reiniciar para atualizar): feche esta.
     procedure AppClose;
+    /// Outra execução do navegador pediu este endereço: abre numa aba e vem para a frente.
+    procedure AppOpenUrl(const AUrl: string);
   end;
 
   TNecoApp = class
@@ -77,8 +79,12 @@ type
     procedure MemoryTick(Sender: TObject);
     procedure NotifySettings(AChange: TNecoSettingsChange);
     procedure SaveSession;
+    procedure OpenFromOtherProcess(const AArgs: TArray<string>);
     procedure EndShutdown;
   public
+    /// Antes de tudo, no .dpr: já há um navegador aberto com este perfil? Passa a linha de
+    /// comando para ele e devolve True (esta execução sai sem abrir janela).
+    class function HandOffToRunning: Boolean;
     /// Carrega os dados, pega a trava de instância e prepara o motor (antes da 1ª janela).
     constructor Create;
     destructor Destroy; override;
@@ -135,12 +141,51 @@ type
 var
   NecoApp: TNecoApp;
 
+/// Os argumentos da linha de comando, com caminho de arquivo já absoluto (outra execução
+/// pode estar noutra pasta atual).
+function NecoCmdLineArgs: TArray<string>;
+/// O endereço pedido nos argumentos ('' = nenhum): o primeiro que não é opção ("-x").
+/// Arquivo vira file:///; texto vira endereço ou busca.
+function NecoArgsToUrl(const AArgs: TArray<string>; AEngine: TNecoSearchEngine): string;
+
 implementation
 
 uses
   System.IOUtils, System.ZLib, System.Types,
-  Neco.Core.Trace, Neco.Engine.Factory, Neco.UI.Theme, Neco.UI.Neco, Neco.UI.Frame,
-  Neco.UI.DefaultBrowser;
+  Neco.Core.Trace, Neco.Engine.Factory, Neco.UI.Theme, Neco.UI.Neco,
+  Neco.UI.Frame, Neco.UI.Instance, Neco.UI.DefaultBrowser;
+
+function NecoCmdLineArgs: TArray<string>;
+var
+  I: Integer;
+  A: string;
+begin
+  Result := nil;
+  for I := 1 to ParamCount do
+  begin
+    A := ParamStr(I);
+    // "Abrir com" do Explorer passa o caminho do arquivo (às vezes relativo).
+    if not A.StartsWith('-') and FileExists(A) then
+      A := ExpandFileName(A);
+    Result := Result + [A];
+  end;
+end;
+
+function NecoArgsToUrl(const AArgs: TArray<string>; AEngine: TNecoSearchEngine): string;
+var
+  A: string;
+begin
+  Result := '';
+  for A in AArgs do
+    if not A.StartsWith('-') then
+    begin
+      if FileExists(A) then
+        Exit(NecoPathToFileUrl(ExpandFileName(A)));
+      Result := NecoInputToUrl(A, AEngine);
+      if Result <> '' then
+        Exit;
+    end;
+end;
 
 // Lista de bloqueio comprimida (tools\neco_embutidos.py): o exe funciona sem arquivos ao lado.
 {$R NecoData.res}
@@ -149,6 +194,43 @@ const
   CClosedMax = 25;
 
 { TNecoApp }
+
+class function TNecoApp.HandOffToRunning: Boolean;
+var
+  S: TNecoSettings;
+  Dir: string;
+begin
+  // Reinício depois de atualizar: o processo antigo está saindo; este espera a trava.
+  if FindCmdLineSwitch('apos-atualizar', ['-'], True) then
+    Exit(False);
+  S := TNecoSettings.Create(System.SysUtils.GetEnvironmentVariable('NECO_DADOS'));
+  try
+    Dir := S.DataDir;
+  finally
+    S.Free;
+  end;
+  // A outra pode estar abrindo (trava pega, janela de mensagens ainda não): espera um pouco.
+  Result := NecoInstanceHandOff(Dir, NecoCmdLineArgs, 5000);
+  if Result then
+    NecoTrace('instancia: pedido entregue ao navegador aberto; saindo');
+end;
+
+procedure TNecoApp.OpenFromOtherProcess(const AArgs: TArray<string>);
+var
+  Url: string;
+  W: INecoWindow;
+begin
+  if FShuttingDown or (FWindows.Count = 0) then
+    Exit;
+  Url := NecoArgsToUrl(AArgs, FSettings.SearchEngine);
+  // Só o exe de novo (atalho, menu Iniciar): uma aba na página inicial.
+  if Url = '' then
+    Url := FSettings.HomeUrl;
+  W := FCurrent;
+  if W = nil then
+    W := FWindows.Last;
+  W.AppOpenUrl(Url);
+end;
 
 constructor TNecoApp.Create;
 var
@@ -164,6 +246,9 @@ begin
     FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir, 15000)
   else
     FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir);
+  // A próxima execução com este perfil entrega o pedido a esta, em vez de abrir outra.
+  if FSessionOwner then
+    NecoInstanceListen(FSettings.DataDir, OpenFromOtherProcess);
   NecoSetTheme(FSettings.Theme);
   NecoSetShown(FSettings.NecoShown);
 
@@ -320,6 +405,9 @@ begin
   // Antes de tudo: as janelas ainda têm as abas.
   SaveSession;
   FShuttingDown := True;
+  // Daqui em diante, outra execução abre o próprio navegador (o reinício pós-atualização
+  // espera a trava deste processo).
+  NecoInstanceStop;
   FMemTimer.Enabled := False;
   if FUpdateTimer <> nil then
     FUpdateTimer.Enabled := False;

@@ -28,6 +28,7 @@ uses
   Neco.UI.BookmarkBar in 'src\ui\Neco.UI.BookmarkBar.pas',
   Neco.UI.History in 'src\ui\Neco.UI.History.pas',
   Neco.UI.DefaultBrowser in 'src\ui\Neco.UI.DefaultBrowser.pas',
+  Neco.UI.Instance in 'src\ui\Neco.UI.Instance.pas',
   Neco.UI.App in 'src\ui\Neco.UI.App.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
@@ -35,6 +36,9 @@ uses
 
 begin
   ReportMemoryLeaksOnShutdown := True;
+  // Já há um navegador aberto com este perfil: ele abre o pedido e esta execução sai.
+  if TNecoApp.HandOffToRunning then
+    Exit;
   Application.Initialize;
   // O que é do navegador inteiro (dados, motor, atualizador) vem antes da primeira janela.
   NecoApp := TNecoApp.Create;

@@ -41,6 +41,8 @@ function NecoFrameIsMaximized(AForm: TCommonCustomForm): Boolean;
 function NecoFrameIsMinimized(AForm: TCommonCustomForm): Boolean;
 /// A janela do form é a janela em primeiro plano.
 function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
+/// Traz a janela para a frente (desminimiza se preciso).
+procedure NecoFrameBringToFront(AForm: TCommonCustomForm);
 /// Milissegundos desde a última tecla ou movimento de mouse no sistema todo.
 function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
@@ -57,9 +59,6 @@ procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
 /// físicos a partir do canto dela, embaixo do cursor e passa o arrasto ao Windows ("mover
 /// janela"). A janela segue o mouse até soltar; Esc cancela. AGrabX < 0: não move antes.
 procedure NecoFrameStartSystemDrag(AForm: TCommonCustomForm; AGrabX, AGrabY: Integer);
-/// Trava com nome (por processo, até ele fechar). True = esta instância é a primeira.
-/// AWaitMs > 0: se outra tem a trava, espera ela fechar até esse tempo (reinício após atualizar).
-function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal = 0): Boolean;
 /// Abre o arquivo com o programa padrão do sistema.
 procedure NecoShellOpen(const APath: string);
 /// Inicia um programa com parâmetros (sem esperar).
@@ -344,6 +343,19 @@ begin
   Result := GetForegroundWindow = FormToHWND(AForm);
 end;
 
+procedure NecoFrameBringToFront(AForm: TCommonCustomForm);
+var
+  W: HWND;
+begin
+  W := FormToHWND(AForm);
+  if W = 0 then
+    Exit;
+  if IsIconic(W) then
+    ShowWindow(W, SW_RESTORE);
+  // A outra execução liberou (AllowSetForegroundWindow) antes de mandar o pedido.
+  SetForegroundWindow(W);
+end;
+
 function NecoSystemIdleMs: Cardinal;
 var
   LI: TLastInputInfo;
@@ -517,32 +529,6 @@ begin
   NecoTrace(Format('arrasto do sistema: hwnd=%x em %d,%d', [NativeUInt(W), P.X, P.Y]));
 end;
 
-function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal): Boolean;
-var
-  N: string;
-  H: THandle;
-  Fim: UInt64;
-begin
-  // '\' separa espaço de nomes no Windows: o caminho da pasta vira um nome plano.
-  N := 'NecoBrowser.' + StringReplace(StringReplace(LowerCase(AName), '\', '_', [rfReplaceAll]),
-    ':', '_', [rfReplaceAll]);
-  Fim := GetTickCount64 + AWaitMs;
-  repeat
-    H := CreateMutex(nil, False, PChar(N));
-    // O handle da dona fica aberto de propósito: o Windows solta quando o processo termina.
-    Result := (H <> 0) and (GetLastError <> ERROR_ALREADY_EXISTS);
-    if Result then
-      Exit;
-    // Sem a trava, não segura o nome: senão a trava sobreviveria à dona enquanto esta
-    // janela estiver aberta.
-    if H <> 0 then
-      CloseHandle(H);
-    if GetTickCount64 >= Fim then
-      Exit;
-    Sleep(200);
-  until False;
-end;
-
 procedure NecoShellOpen(const APath: string);
 begin
   if APath <> '' then
@@ -594,6 +580,10 @@ begin
   Result := True;
 end;
 
+procedure NecoFrameBringToFront(AForm: TCommonCustomForm);
+begin
+end;
+
 function NecoSystemIdleMs: Cardinal;
 begin
   Result := 0;
@@ -620,11 +610,6 @@ end;
 
 procedure NecoFrameStartSystemDrag(AForm: TCommonCustomForm; AGrabX, AGrabY: Integer);
 begin
-end;
-
-function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal): Boolean;
-begin
-  Result := True;
 end;
 
 procedure NecoShellOpen(const APath: string);
