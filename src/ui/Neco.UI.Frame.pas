@@ -32,7 +32,8 @@ type
 procedure NecoFrameAttach(AForm: TCommonCustomForm; ATitleHeight: Single;
   const AHitTest: TNecoFrameHitTest; const AMaxHover: TProc<Boolean>; const AMaxClick: TProc);
 /// Solta os callbacks (o form vai ser destruído). A janela mantém a moldura sem barra.
-procedure NecoFrameDetach;
+/// Cada janela tem a sua barra: soltar uma não mexe nas outras.
+procedure NecoFrameDetach(AForm: TCommonCustomForm);
 
 procedure NecoFrameMinimize(AForm: TCommonCustomForm);
 procedure NecoFrameToggleMaximize(AForm: TCommonCustomForm);
@@ -67,19 +68,26 @@ uses
   Winapi.Windows, Winapi.Messages, Winapi.CommCtrl, Winapi.ShellAPI, Winapi.MultiMon, FMX.Platform.Win,
   Neco.Core.Trace;
 
-var
-  GWnd: HWND;
-  GForm: TCommonCustomForm;
-  GTitleHeight: Single;
-  GHitTest: TNecoFrameHitTest;
-  GMaxHover: TProc<Boolean>;
-  GMaxClick: TProc;
-  GMaxHot: Boolean;
-  GTracking: Boolean;
-  GFull: Boolean;
-  GSavedStyle: NativeInt;
-  GSavedRect: TRect;
-  GSavedMax: Boolean;
+type
+  /// Estado da barra de uma janela. Vai no dwRefData da subclasse: nasce no NecoFrameAttach
+  /// e é liberado no WM_NCDESTROY da janela.
+  PFrameState = ^TFrameState;
+  TFrameState = record
+    Form: TCommonCustomForm; // nil depois do NecoFrameDetach
+    TitleHeight: Single;
+    HitTest: TNecoFrameHitTest;
+    MaxHover: TProc<Boolean>;
+    MaxClick: TProc;
+    MaxHot: Boolean;
+    Tracking: Boolean;
+    Full: Boolean;
+    SavedStyle: NativeInt;
+    SavedRect: TRect;
+    SavedMax: Boolean;
+  end;
+
+const
+  CFrameSubclassId = 1;
 
 /// Espessura da borda de redimensionar, em pixels físicos, na DPI da janela.
 function FrameThickness(AWnd: HWND): Integer;
@@ -92,21 +100,34 @@ begin
   Result := GetSystemMetricsForDpi(SM_CYFRAME, Dpi) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, Dpi);
 end;
 
-procedure SetMaxHot(AValue: Boolean);
+function FrameProc(hWnd: HWND; uMsg: UINT; wParam: WPARAM; lParam: LPARAM;
+  uIdSubclass: UINT_PTR; dwRefData: DWORD_PTR): LRESULT; stdcall; forward;
+
+/// O estado da janela, ou nil se ela não tem a barra própria.
+function FindState(AWnd: HWND): PFrameState;
+var
+  Ref: DWORD_PTR;
 begin
-  if GMaxHot = AValue then
-    Exit;
-  GMaxHot := AValue;
-  if Assigned(GMaxHover) then
-    GMaxHover(AValue);
+  Result := nil;
+  if (AWnd <> 0) and GetWindowSubclass(AWnd, @FrameProc, CFrameSubclassId, Ref) then
+    Result := PFrameState(Ref);
 end;
 
-function TitleHit(AWnd: HWND; ALParam: LPARAM): LRESULT;
+procedure SetMaxHot(S: PFrameState; AValue: Boolean);
+begin
+  if S.MaxHot = AValue then
+    Exit;
+  S.MaxHot := AValue;
+  if Assigned(S.MaxHover) then
+    S.MaxHover(AValue);
+end;
+
+function TitleHit(S: PFrameState; AWnd: HWND; ALParam: LPARAM): LRESULT;
 var
   Pt: TPoint;
   CR: TRect;
   B: Integer;
-  S: Single;
+  Sc: Single;
 begin
   Result := HTCLIENT;
   Pt := TPoint.Create(SmallInt(LoWord(ALParam)), SmallInt(HiWord(ALParam)));
@@ -125,14 +146,14 @@ begin
       Exit(HTTOP);
     end;
   end;
-  if (GForm = nil) or not Assigned(GHitTest) then
+  if (S.Form = nil) or not Assigned(S.HitTest) then
     Exit;
-  S := GForm.Handle.Scale;
-  if S <= 0 then
-    S := 1;
-  if Pt.Y >= GTitleHeight * S then
+  Sc := S.Form.Handle.Scale;
+  if Sc <= 0 then
+    Sc := 1;
+  if Pt.Y >= S.TitleHeight * Sc then
     Exit;
-  case GHitTest(TPointF.Create(Pt.X / S, Pt.Y / S)) of
+  case S.HitTest(TPointF.Create(Pt.X / Sc, Pt.Y / Sc)) of
     fhCaption:
       Result := HTCAPTION;
     fhMaxButton:
@@ -146,10 +167,12 @@ var
   P: PNCCalcSizeParams;
   Top: Integer;
   Tme: TTrackMouseEvent;
+  S: PFrameState;
 begin
+  S := PFrameState(dwRefData);
   case uMsg of
     WM_NCCALCSIZE:
-      if (wParam <> 0) and GFull then
+      if (wParam <> 0) and S.Full then
         Exit(0) // tela cheia: a janela inteira é área cliente
       else if wParam <> 0 then
       begin
@@ -165,35 +188,35 @@ begin
       end;
     WM_NCHITTEST:
       begin
-        if GFull then
+        if S.Full then
           Exit(HTCLIENT); // sem arrastar nem redimensionar
         Result := DefSubclassProc(hWnd, uMsg, wParam, lParam);
         if Result = HTCLIENT then
-          Result := TitleHit(hWnd, lParam);
+          Result := TitleHit(S, hWnd, lParam);
         if Result <> HTMAXBUTTON then
-          SetMaxHot(False);
+          SetMaxHot(S, False);
         Exit;
       end;
     WM_NCMOUSEMOVE:
       if wParam = HTMAXBUTTON then
       begin
-        SetMaxHot(True);
-        if not GTracking then
+        SetMaxHot(S, True);
+        if not S.Tracking then
         begin
           Tme.cbSize := SizeOf(Tme);
           Tme.dwFlags := TME_LEAVE or TME_NONCLIENT;
           Tme.hwndTrack := hWnd;
           Tme.dwHoverTime := 0;
-          GTracking := TrackMouseEvent(Tme);
+          S.Tracking := TrackMouseEvent(Tme);
         end;
         Exit(0);
       end
       else
-        SetMaxHot(False);
+        SetMaxHot(S, False);
     WM_NCMOUSELEAVE:
       begin
-        GTracking := False;
-        SetMaxHot(False);
+        S.Tracking := False;
+        SetMaxHot(S, False);
       end;
     WM_NCLBUTTONDOWN, WM_NCLBUTTONDBLCLK:
       // Engole: o padrão desenharia o botão clássico por cima da nossa faixa.
@@ -202,16 +225,15 @@ begin
     WM_NCLBUTTONUP:
       if wParam = HTMAXBUTTON then
       begin
-        SetMaxHot(False);
-        if Assigned(GMaxClick) then
-          GMaxClick();
+        SetMaxHot(S, False);
+        if Assigned(S.MaxClick) then
+          S.MaxClick();
         Exit(0);
       end;
     WM_NCDESTROY:
       begin
         RemoveWindowSubclass(hWnd, @FrameProc, uIdSubclass);
-        if GWnd = hWnd then
-          GWnd := 0;
+        Dispose(S);
       end;
   end;
   Result := DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -235,37 +257,54 @@ procedure NecoFrameAttach(AForm: TCommonCustomForm; ATitleHeight: Single;
   const AHitTest: TNecoFrameHitTest; const AMaxHover: TProc<Boolean>; const AMaxClick: TProc);
 var
   W: HWND;
+  S: PFrameState;
+  Nova: Boolean;
 begin
   EnsureComCtl;
   W := FormToHWND(AForm);
-  NecoTrace(Format('barra propria: hwnd=%x anterior=%x', [NativeUInt(W), NativeUInt(GWnd)]));
   if W = 0 then
     Exit;
-  GForm := AForm;
-  GTitleHeight := ATitleHeight;
-  GHitTest := AHitTest;
-  GMaxHover := AMaxHover;
-  GMaxClick := AMaxClick;
-  if GWnd <> W then
+  // O FMX pode recriar a janela: a nova ganha estado próprio, a velha libera o dela.
+  S := FindState(W);
+  Nova := S = nil;
+  NecoTrace(Format('barra propria: hwnd=%x nova=%s', [NativeUInt(W), BoolToStr(Nova, True)]));
+  if Nova then
   begin
-    if not SetWindowSubclass(W, @FrameProc, 1, 0) then
-    begin
-      NecoTrace(Format('barra propria: SetWindowSubclass falhou (erro %d)', [GetLastError]));
-      Exit;
-    end;
-    GWnd := W;
+    New(S); // New zera os campos gerenciados (os callbacks); o resto vai abaixo
+    S.MaxHot := False;
+    S.Tracking := False;
+    S.Full := False;
+    S.SavedStyle := 0;
+    S.SavedRect := TRect.Empty;
+    S.SavedMax := False;
+  end;
+  S.Form := AForm;
+  S.TitleHeight := ATitleHeight;
+  S.HitTest := AHitTest;
+  S.MaxHover := AMaxHover;
+  S.MaxClick := AMaxClick;
+  if Nova and not SetWindowSubclass(W, @FrameProc, CFrameSubclassId, DWORD_PTR(S)) then
+  begin
+    NecoTrace(Format('barra propria: SetWindowSubclass falhou (erro %d)', [GetLastError]));
+    Dispose(S);
+    Exit;
   end;
   // Recalcula a moldura já com a regra nova (a barra branca some aqui).
   SetWindowPos(W, 0, 0, 0, 0, 0, SWP_FRAMECHANGED or SWP_NOMOVE or SWP_NOSIZE or
     SWP_NOZORDER or SWP_NOACTIVATE or SWP_NOOWNERZORDER);
 end;
 
-procedure NecoFrameDetach;
+procedure NecoFrameDetach(AForm: TCommonCustomForm);
+var
+  S: PFrameState;
 begin
-  GHitTest := nil;
-  GMaxHover := nil;
-  GMaxClick := nil;
-  GForm := nil;
+  S := FindState(FormToHWND(AForm));
+  if S = nil then
+    Exit;
+  S.HitTest := nil;
+  S.MaxHover := nil;
+  S.MaxClick := nil;
+  S.Form := nil;
 end;
 
 procedure NecoFrameMinimize(AForm: TCommonCustomForm);
@@ -313,22 +352,25 @@ end;
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
 var
   W: HWND;
+  S: PFrameState;
   MI: TMonitorInfo;
   R: TRect;
 begin
   W := FormToHWND(AForm);
-  if (W = 0) or (AOn = GFull) then
+  // O estado da tela cheia é da barra da janela: sem ela, nada a fazer.
+  S := FindState(W);
+  if (S = nil) or (AOn = S.Full) then
     Exit;
   if AOn then
   begin
     // Como o Chromium: guarda o estado, tira moldura e cobre o monitor.
-    GSavedMax := IsZoomed(W);
-    if GSavedMax then
+    S.SavedMax := IsZoomed(W);
+    if S.SavedMax then
       SendMessage(W, WM_SYSCOMMAND, SC_RESTORE, 0);
-    GetWindowRect(W, GSavedRect);
-    GSavedStyle := GetWindowLongPtr(W, GWL_STYLE);
-    GFull := True;
-    SetWindowLongPtr(W, GWL_STYLE, GSavedStyle and not NativeInt(WS_CAPTION or WS_THICKFRAME));
+    GetWindowRect(W, S.SavedRect);
+    S.SavedStyle := GetWindowLongPtr(W, GWL_STYLE);
+    S.Full := True;
+    SetWindowLongPtr(W, GWL_STYLE, S.SavedStyle and not NativeInt(WS_CAPTION or WS_THICKFRAME));
     MI.cbSize := SizeOf(MI);
     GetMonitorInfo(MonitorFromWindow(W, MONITOR_DEFAULTTONEAREST), @MI);
     R := MI.rcMonitor;
@@ -336,11 +378,11 @@ begin
   end
   else
   begin
-    GFull := False;
-    SetWindowLongPtr(W, GWL_STYLE, GSavedStyle);
-    R := GSavedRect;
+    S.Full := False;
+    SetWindowLongPtr(W, GWL_STYLE, S.SavedStyle);
+    R := S.SavedRect;
     SetWindowPos(W, 0, R.Left, R.Top, R.Width, R.Height, SWP_NOZORDER or SWP_NOOWNERZORDER or SWP_FRAMECHANGED);
-    if GSavedMax then
+    if S.SavedMax then
       ShowWindow(W, SW_MAXIMIZE);
   end;
 end;
@@ -456,7 +498,7 @@ procedure NecoFrameAttach(AForm: TCommonCustomForm; ATitleHeight: Single;
 begin
 end;
 
-procedure NecoFrameDetach;
+procedure NecoFrameDetach(AForm: TCommonCustomForm);
 begin
 end;
 
