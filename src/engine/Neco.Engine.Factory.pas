@@ -22,6 +22,8 @@ type
 procedure NecoEngineSetup(const AConfig: TNecoEngineConfig);
 /// Cria um motor filho do form. A criação nativa é assíncrona (ver INecoEngine.IsReady).
 function NecoCreateEngine(AForm: TCommonCustomForm): INecoEngine;
+/// Passa a página viva do motor para a janela de outro form (aba movida entre janelas).
+procedure NecoEngineMoveToForm(const AEngine: INecoEngine; AForm: TCommonCustomForm);
 /// Fecha todos os motores e downloads. Chamar ao fechar o app.
 procedure NecoEngineShutdown;
 /// Mede a memória do navegador inteiro (o exe e todos os processos do motor).
@@ -71,6 +73,14 @@ begin
   Result := NecoWV2CreateEngine(FormToHWND(AForm));
 {$ELSE}
   raise ENotSupportedException.Create('Motor ainda não implementado nesta plataforma (fase 2).');
+{$ENDIF}
+end;
+
+procedure NecoEngineMoveToForm(const AEngine: INecoEngine; AForm: TCommonCustomForm);
+begin
+{$IFDEF MSWINDOWS}
+  if AEngine <> nil then
+    AEngine.SetParentWindow(NativeUInt(FormToHWND(AForm)));
 {$ENDIF}
 end;
 

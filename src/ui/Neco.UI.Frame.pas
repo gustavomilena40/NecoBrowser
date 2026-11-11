@@ -44,6 +44,12 @@ function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
 function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+/// Janela com botão próprio na barra de tarefas e no Alt+Tab (várias janelas no processo).
+procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
+/// Com o botão do mouse ainda apertado: põe o ponto (AGrabX, AGrabY) da janela, em pixels
+/// físicos a partir do canto dela, embaixo do cursor e passa o arrasto ao Windows ("mover
+/// janela"). A janela segue o mouse até soltar; Esc cancela. AGrabX < 0: não move antes.
+procedure NecoFrameStartSystemDrag(AForm: TCommonCustomForm; AGrabX, AGrabY: Integer);
 /// Trava com nome (por processo, até ele fechar). True = esta instância é a primeira.
 /// AWaitMs > 0: se outra tem a trava, espera ela fechar até esse tempo (reinício após atualizar).
 function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal = 0): Boolean;
@@ -339,6 +345,67 @@ begin
   end;
 end;
 
+procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
+var
+  W, App: HWND;
+  Ex: NativeInt;
+  Changed: Boolean;
+begin
+  W := FormToHWND(AForm);
+  if W = 0 then
+    Exit;
+  // O FMX cria toda janela de form "possuída" pela janela oculta do app, e é essa que fica
+  // na barra de tarefas: com várias janelas seria um botão só. Sem dono e com
+  // WS_EX_APPWINDOW, cada janela tem o seu botão e aparece no Alt+Tab.
+  Changed := GetWindowLongPtr(W, GWLP_HWNDPARENT) <> 0;
+  if Changed then
+    SetWindowLongPtr(W, GWLP_HWNDPARENT, 0);
+  Ex := GetWindowLongPtr(W, GWL_EXSTYLE);
+  if Ex and WS_EX_APPWINDOW = 0 then
+  begin
+    SetWindowLongPtr(W, GWL_EXSTYLE, Ex or WS_EX_APPWINDOW);
+    Changed := True;
+  end;
+  // A barra de tarefas só relê o estilo quando a janela aparece.
+  if Changed and IsWindowVisible(W) then
+  begin
+    ShowWindow(W, SW_HIDE);
+    ShowWindow(W, SW_SHOW);
+  end;
+  // A janela oculta do app sai da barra de tarefas e do Alt+Tab.
+  App := ApplicationHWND;
+  if App <> 0 then
+  begin
+    Ex := GetWindowLongPtr(App, GWL_EXSTYLE);
+    if Ex and WS_EX_TOOLWINDOW = 0 then
+    begin
+      ShowWindow(App, SW_HIDE);
+      SetWindowLongPtr(App, GWL_EXSTYLE, (Ex and not NativeInt(WS_EX_APPWINDOW)) or WS_EX_TOOLWINDOW);
+    end;
+  end;
+  NecoTrace(Format('janela independente: hwnd=%x mudou=%s', [NativeUInt(W), BoolToStr(Changed, True)]));
+end;
+
+procedure NecoFrameStartSystemDrag(AForm: TCommonCustomForm; AGrabX, AGrabY: Integer);
+var
+  W: HWND;
+  P: TPoint;
+begin
+  W := FormToHWND(AForm);
+  if W = 0 then
+    Exit;
+  GetCursorPos(P);
+  // AGrabX < 0: a janela fica onde está (arrasta a partir do ponto atual do mouse).
+  if AGrabX >= 0 then
+    SetWindowPos(W, HWND_TOP, P.X - AGrabX, P.Y - AGrabY, 0, 0, SWP_NOSIZE);
+  SetForegroundWindow(W);
+  // Quem tinha o mouse preso (a aba) solta; o clique "na barra de título" da janela nova
+  // faz o Windows entrar no laço de mover, que dura até o botão ser solto.
+  Winapi.Windows.ReleaseCapture;
+  PostMessage(W, WM_NCLBUTTONDOWN, HTCAPTION, MakeLParam(Word(P.X), Word(P.Y)));
+  NecoTrace(Format('arrasto do sistema: hwnd=%x em %d,%d', [NativeUInt(W), P.X, P.Y]));
+end;
+
 function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal): Boolean;
 var
   N: string;
@@ -422,6 +489,14 @@ begin
 end;
 
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+begin
+end;
+
+procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
+begin
+end;
+
+procedure NecoFrameStartSystemDrag(AForm: TCommonCustomForm; AGrabX, AGrabY: Integer);
 begin
 end;
 

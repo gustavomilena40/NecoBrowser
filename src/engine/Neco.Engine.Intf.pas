@@ -116,6 +116,9 @@ type
     procedure OpenTaskManager;
     /// Solta o motor nativo e desliga todos os eventos. Chamadas posteriores são ignoradas.
     procedure Close;
+    /// Passa a página viva para outra janela (aba movida entre janelas): nada recarrega.
+    /// AWnd é o handle nativo da janela nova (HWND no Windows).
+    procedure SetParentWindow(AWnd: NativeUInt);
 
     function GetRequestFilter: TNecoRequestFilter;
     procedure SetRequestFilter(const AValue: TNecoRequestFilter);

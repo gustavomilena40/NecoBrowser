@@ -198,6 +198,7 @@ type
     procedure SetAutofill(AForms, APasswords: Boolean);
     procedure OpenTaskManager;
     procedure Close;
+    procedure SetParentWindow(AWnd: NativeUInt);
   end;
 
   TNecoWV2Download = class(TInterfacedObject, INecoDownload,
@@ -1570,6 +1571,27 @@ begin
     Exit;
   if Supports(FWebView, ICoreWebView2_6, W6) then
     W6.OpenTaskManagerWindow;
+end;
+
+procedure TNecoWV2Engine.SetParentWindow(AWnd: NativeUInt);
+var
+  W: HWND;
+begin
+  W := HWND(AWnd);
+  if FClosed or (W = 0) or (W = FParentWnd) then
+    Exit;
+  NecoTrace(Format('motor muda de janela: %x -> %x', [NativeUInt(FParentWnd), NativeUInt(W)]));
+  FParentWnd := W;
+  // A subclasse avisa o motor quando a janela nova se mexe (WM_MOVE).
+  HookParent(W);
+  // Controller ainda não criado: ele nasce direto na janela nova (StartController usa FParentWnd).
+  if FController = nil then
+    Exit;
+  // O import da RTL declara wireHWND (ponteiro), mas a função nativa recebe o HWND por
+  // valor: mesmo tamanho, então o valor vai direto.
+  FController.Set_ParentWindow(wireHWND(W));
+  FController.NotifyParentWindowPositionChanged;
+  ApplyBounds;
 end;
 
 procedure TNecoWV2Engine.Close;

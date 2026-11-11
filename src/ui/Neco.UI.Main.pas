@@ -262,6 +262,8 @@ type
     procedure SelfTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
+    /// A ação do atalho (nil = não é atalho). Executar adiado: ver HandleShortcut.
+    function ShortcutAction(AKey: Word; AShift: TShiftState): TProc;
   protected
     procedure DoScaleChanged; override;
   public
@@ -777,6 +779,9 @@ begin
   B.Stroke.Kind := TBrushKind.None;
   B.Fill.Kind := TBrushKind.Solid;
   B.HitTest := True;
+  // Com o botão apertado, o mouse continua sendo da aba fora dela: o arrasto para fora da
+  // faixa e o soltar em qualquer lugar chegam aqui.
+  B.AutoCapture := True;
   B.TagObject := ATab;
   B.OnMouseDown := TabButtonMouseDown;
   B.OnMouseMove := TabButtonMouseMove;
@@ -2927,6 +2932,25 @@ end;
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
 var
   Acao: TProc;
+begin
+  // A ação nasce em outra função. Se nascesse aqui, o procedimento anônimo e a variável
+  // que o adiamento abaixo captura ficariam no mesmo quadro: um aponta para o outro e
+  // nenhum é liberado (vazamento visto em 2026-11-11 com o Ctrl+T).
+  Acao := ShortcutAction(AKey, AShift);
+  Result := Assigned(Acao);
+  if Result then
+    // Adiado: quem chama pode ser um callback do motor que a ação vai destruir.
+    TThread.ForceQueue(nil,
+      procedure
+      begin
+        if not FShuttingDown then
+          Acao();
+      end);
+end;
+
+function TFormMain.ShortcutAction(AKey: Word; AShift: TShiftState): TProc;
+var
+  Acao: TProc;
   M: TShiftState;
   N: Integer;
 begin
@@ -2994,15 +3018,7 @@ begin
     Acao := procedure begin BackClick(nil); end
   else if (M = [ssAlt]) and (AKey = vkRight) then
     Acao := procedure begin ForwardClick(nil); end;
-  Result := Assigned(Acao);
-  if Result then
-    // Adiado: quem chama pode ser um callback do motor que a ação vai destruir.
-    TThread.ForceQueue(nil,
-      procedure
-      begin
-        if not FShuttingDown then
-          Acao();
-      end);
+  Result := Acao;
 end;
 
 procedure TFormMain.KeyDown(var Key: Word; var KeyChar: WideChar; Shift: TShiftState);
