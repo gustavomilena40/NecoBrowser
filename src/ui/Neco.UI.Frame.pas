@@ -45,9 +45,12 @@ function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
 /// Trava com nome (por processo, até ele fechar). True = esta instância é a primeira.
-function NecoAcquireInstanceLock(const AName: string): Boolean;
+/// AWaitMs > 0: se outra tem a trava, espera ela fechar até esse tempo (reinício após atualizar).
+function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal = 0): Boolean;
 /// Abre o arquivo com o programa padrão do sistema.
 procedure NecoShellOpen(const APath: string);
+/// Inicia um programa com parâmetros (sem esperar).
+procedure NecoLaunch(const AExe, AParams: string);
 /// Abre a pasta do arquivo, com ele selecionado.
 procedure NecoShowInFolder(const APath: string);
 
@@ -336,23 +339,41 @@ begin
   end;
 end;
 
-function NecoAcquireInstanceLock(const AName: string): Boolean;
+function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal): Boolean;
 var
   N: string;
   H: THandle;
+  Fim: UInt64;
 begin
   // '\' separa espaço de nomes no Windows: o caminho da pasta vira um nome plano.
   N := 'NecoBrowser.' + StringReplace(StringReplace(LowerCase(AName), '\', '_', [rfReplaceAll]),
     ':', '_', [rfReplaceAll]);
-  H := CreateMutex(nil, False, PChar(N));
-  // O handle fica aberto de propósito: o Windows solta quando o processo termina.
-  Result := (H <> 0) and (GetLastError <> ERROR_ALREADY_EXISTS);
+  Fim := GetTickCount64 + AWaitMs;
+  repeat
+    H := CreateMutex(nil, False, PChar(N));
+    // O handle da dona fica aberto de propósito: o Windows solta quando o processo termina.
+    Result := (H <> 0) and (GetLastError <> ERROR_ALREADY_EXISTS);
+    if Result then
+      Exit;
+    // Sem a trava, não segura o nome: senão a trava sobreviveria à dona enquanto esta
+    // janela estiver aberta.
+    if H <> 0 then
+      CloseHandle(H);
+    if GetTickCount64 >= Fim then
+      Exit;
+    Sleep(200);
+  until False;
 end;
 
 procedure NecoShellOpen(const APath: string);
 begin
   if APath <> '' then
     ShellExecute(0, 'open', PChar(APath), nil, nil, SW_SHOWNORMAL);
+end;
+
+procedure NecoLaunch(const AExe, AParams: string);
+begin
+  ShellExecute(0, 'open', PChar(AExe), PChar(AParams), PChar(ExtractFileDir(AExe)), SW_SHOWNORMAL);
 end;
 
 procedure NecoShowInFolder(const APath: string);
@@ -404,12 +425,16 @@ procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
 begin
 end;
 
-function NecoAcquireInstanceLock(const AName: string): Boolean;
+function NecoAcquireInstanceLock(const AName: string; AWaitMs: Cardinal): Boolean;
 begin
   Result := True;
 end;
 
 procedure NecoShellOpen(const APath: string);
+begin
+end;
+
+procedure NecoLaunch(const AExe, AParams: string);
 begin
 end;
 

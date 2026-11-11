@@ -1,6 +1,6 @@
 ﻿unit Neco.UI.Settings;
 
-{ Painel de configurações: motor de busca, tema, bloqueador e a Neco.
+{ Painel de configurações: motor de busca, tema, bloqueador, atualização e a Neco.
 
   O painel altera o TNecoSettings direto e avisa o form (OnChanged), que aplica e grava.
   As linhas são criadas uma vez e só mudam de estilo (Refresh): nenhum clique libera
@@ -14,7 +14,8 @@ uses
   Neco.Core.Url, Neco.Core.Settings, Neco.UI.Theme, Neco.UI.Neco, Neco.UI.SidePanel;
 
 type
-  TNecoSettingsChange = (scSearch, scTheme, scBookmarkBar, scSession, scBlocker, scAutofill, scNeco);
+  TNecoSettingsChange = (scSearch, scTheme, scBookmarkBar, scSession, scBlocker, scAutofill, scNeco,
+    scAutoUpdate, scDefaultBrowser);
   TNecoSettingsChangeEvent = procedure(Sender: TObject; AChange: TNecoSettingsChange) of object;
 
   /// Uma linha clicável: opção de escolha única (bolinha) ou chave liga/desliga.
@@ -29,10 +30,12 @@ type
     FSub: TLabel;
     procedure Hover(Sender: TObject);
     procedure SetChecked(AValue: Boolean);
+    procedure SetSubText(const AValue: string);
   public
     constructor CreateRow(AOwner: TComponent; ASwitch: Boolean; const ATitle, ASub: string);
     procedure Restyle;
     property Checked: Boolean read FChecked write SetChecked;
+    property SubText: string write SetSubText;
   end;
 
   TNecoSettingsPanel = class(TNecoSidePanel)
@@ -47,6 +50,8 @@ type
     FForms: TNecoOptionRow;
     FPasswords: TNecoOptionRow;
     FNeco: TNecoOptionRow;
+    FAutoUpdate: TNecoOptionRow;
+    FDefaultBrowser: TNecoOptionRow;
     FNecoSprite: TNecoSprite;
     FSections: TArray<TLabel>;
     FOnChanged: TNecoSettingsChangeEvent;
@@ -60,6 +65,10 @@ type
     /// Marca as linhas pelo que está em Settings (mudou por fora: escudo, botão de tema).
     procedure Refresh;
     procedure Restyle; override;
+    /// Linha de baixo da chave de atualização (versão atual e o que está acontecendo).
+    procedure SetUpdateInfo(const AText: string);
+    /// Marca a chave do navegador padrão (o estado vem do Windows, não do settings.json).
+    procedure SetDefaultBrowser(AIsDefault: Boolean);
     property OnChanged: TNecoSettingsChangeEvent read FOnChanged write FOnChanged;
   end;
 
@@ -157,6 +166,11 @@ begin
   Restyle;
 end;
 
+procedure TNecoOptionRow.SetSubText(const AValue: string);
+begin
+  FSub.Text := AValue;
+end;
+
 procedure TNecoOptionRow.Hover(Sender: TObject);
 begin
   Restyle;
@@ -233,6 +247,13 @@ begin
     'nome, e-mail, endereço: sugere de novo na próxima vez');
   FPasswords := Option(True, 'Oferecer para salvar senhas',
     'guardadas cifradas no seu usuário do Windows');
+
+  Section('Navegador padrão');
+  FDefaultBrowser := Option(True, 'Usar o NecoBrowser como navegador padrão',
+    'abre os Aplicativos padrão do Windows para confirmar');
+
+  Section('Atualizações');
+  FAutoUpdate := Option(True, 'Atualizar automaticamente', 'procura versão nova ao abrir');
 
   Section('Neco-Arc');
   FNeco := Option(True, 'Mostrar a Neco', 'na faixa de abas, nos painéis e na página de erro');
@@ -318,6 +339,13 @@ begin
     FSettings.NecoShown := not FSettings.NecoShown;
     DoChanged(scNeco);
   end;
+  if Sender = FDefaultBrowser then
+    DoChanged(scDefaultBrowser); // o form registra e abre a tela do Windows
+  if Sender = FAutoUpdate then
+  begin
+    FSettings.AutoUpdate := not FSettings.AutoUpdate;
+    DoChanged(scAutoUpdate);
+  end;
   Refresh;
 end;
 
@@ -344,7 +372,22 @@ begin
   FForms.Checked := FSettings.FormAutofill;
   FPasswords.Checked := FSettings.SavePasswords;
   FNeco.Checked := FSettings.NecoShown;
+  FAutoUpdate.Checked := FSettings.AutoUpdate;
   FNecoSprite.Repaint;
+end;
+
+procedure TNecoSettingsPanel.SetUpdateInfo(const AText: string);
+begin
+  FAutoUpdate.SubText := AText;
+end;
+
+procedure TNecoSettingsPanel.SetDefaultBrowser(AIsDefault: Boolean);
+begin
+  FDefaultBrowser.Checked := AIsDefault;
+  if AIsDefault then
+    FDefaultBrowser.SubText := 'é o padrão: links de outros programas abrem aqui'
+  else
+    FDefaultBrowser.SubText := 'abre os Aplicativos padrão do Windows para confirmar';
 end;
 
 procedure TNecoSettingsPanel.Restyle;

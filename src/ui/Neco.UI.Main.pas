@@ -12,7 +12,7 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
   FMX.Edit, FMX.Dialogs,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
-  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
+  Neco.Core.Updater, Neco.Core.AdExtension, Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
   Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
   Neco.UI.BookmarkBar, Neco.UI.History;
 
@@ -59,6 +59,17 @@ type
     // menu da seta (janela própria, como as sugestões: fica por cima da página)
     FMenu: TPopup;
     FMenuBox: TRectangle;
+    FMenuY: Single; // onde entra a próxima linha do menu
+    // atualização automática (só na janela dona da sessão; nas outras FUpdater = nil)
+    FUpdater: TNecoUpdater;
+    FUpdateTimer: TTimer;
+    FUpdateVersion: string;   // versão baixada esperando a troca ('' = nenhuma)
+    FUpdateDot: TCircle;      // bolinha na seta quando há versão pronta
+    FRestartForUpdate: Boolean;
+    // extensão de bloqueio (uBlock Origin Lite): baixada só pela janela dona da sessão
+    FAdExt: TNecoAdExtension;
+    FAdTimer: TTimer;
+    FAdFolder: string;        // versão baixada a usar ('' = ainda não baixada)
     // medidor de memória: o exe mais todos os processos do motor (que o Windows mostra
     // num grupo separado, "Gerenciador WebView2")
     FBtnMemory: TNecoIconButton;
@@ -200,7 +211,27 @@ type
     // menu da seta
     procedure BuildMenu;
     procedure MenuClick(Sender: TObject);
+    procedure ClearMenu;
+    procedure AddMenuRow(ATag: Integer; const AIcon, AText, ARight: string; AIconColor: TAlphaColor;
+      AMarked: Boolean);
+    procedure OpenMenu;
     procedure HideMenu;
+    // atualização automática
+    procedure StartUpdater;
+    procedure UpdateTick(Sender: TObject);
+    procedure UpdateReady(const AVersion: string);
+    procedure ShowUpdateNotice;
+    procedure RefreshUpdateInfo;
+    procedure FinishUpdate;
+    // extensão de bloqueio
+    procedure StartAdExtension;
+    procedure ApplyAdExtension;
+    procedure AdTick(Sender: TObject);
+    procedure AdDownloaded(const AFolder: string);
+    procedure AdInstalled(const AFolder: string);
+    // navegador padrão do Windows
+    procedure FormActivated(Sender: TObject);
+    procedure RefreshDefaultBrowser;
     procedure MenuRowClick(Sender: TObject);
     procedure MenuRowHover(Sender: TObject);
     // painéis, downloads e favoritos
@@ -244,7 +275,8 @@ implementation
 
 uses
   System.IOUtils, System.Math, System.ZLib,
-  Neco.Core.Url, Neco.Core.Trace, Neco.Core.Favicons, Neco.Engine.Factory;
+  Neco.Core.Url, Neco.Core.Trace, Neco.Core.Favicons, Neco.Engine.Factory,
+  Neco.UI.DefaultBrowser;
 
 {$R *.fmx}
 // Lista de bloqueio comprimida (tools\neco_embutidos.py): o exe funciona sem arquivos ao lado.
@@ -260,7 +292,12 @@ begin
   FTabs := TObjectList<TNecoTab>.Create(False);
   FClosed := TList<string>.Create;
   LoadData;
-  FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir);
+  // Reinício depois de atualizar: a janela antiga ainda está saindo; espera ela soltar
+  // a trava para esta ser a dona e reabrir as abas.
+  if FindCmdLineSwitch('apos-atualizar', ['-'], True) then
+    FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir, 15000)
+  else
+    FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir);
   NecoSetTheme(FSettings.Theme);
   NecoSetShown(FSettings.NecoShown);
 
@@ -275,6 +312,13 @@ begin
   // A janela já existe aqui (o FMX cria o handle antes do OnCreate): a barra branca
   // some antes da primeira exibição.
   AttachFrame;
+  StartUpdater;
+  StartAdExtension;
+  // Pasta do exe mudou desde que virou navegador padrão: os links voltam a achar o exe.
+  NecoFixBrowserRegistration;
+  // Volta da tela "Aplicativos padrão" do Windows: a chave mostra o estado novo.
+  OnActivate := FormActivated;
+  RefreshDefaultBrowser;
 end;
 
 procedure TFormMain.FormShow(Sender: TObject);
@@ -401,6 +445,13 @@ begin
     FSelfTest.Enabled := False;
   FProgressTimer.Enabled := False;
   FMemTimer.Enabled := False;
+  if FUpdateTimer <> nil then
+    FUpdateTimer.Enabled := False;
+  if FAdTimer <> nil then
+    FAdTimer.Enabled := False;
+  // Para o download da extensão antes de fechar o motor (a resposta não chega mais).
+  if FAdExt <> nil then
+    FAdExt.Shutdown;
   HideSuggestions;
   FPanelDownloads.Shutdown;
   FBookmarks.OnChange := nil;
@@ -416,6 +467,9 @@ begin
     T.Free;
   FTabs.Clear;
   NecoEngineShutdown;
+  FreeAndNil(FAdExt);
+  // Com tudo gravado e os motores fechados: troca o exe (e reabre, se foi o pedido).
+  FinishUpdate;
   FreeAndNil(FTabs);
   FreeAndNil(FClosed);
   FreeAndNil(FSuggestRows); // só a lista: as linhas são do form
@@ -1117,6 +1171,13 @@ begin
   FShieldBadgeText.TextSettings.HorzAlign := TTextAlign.Center;
   FShieldBadgeText.TextSettings.Font.Style := [TFontStyle.fsBold];
   FShieldBadgeText.TextSettings.Trimming := TTextTrimming.None;
+  // Bolinha no canto de cima da seta: versão nova pronta (o item fica no menu).
+  FUpdateDot := TCircle.Create(Self);
+  FUpdateDot.Parent := FBtnMenu;
+  FUpdateDot.HitTest := False;
+  FUpdateDot.Stroke.Kind := TBrushKind.None;
+  FUpdateDot.SetBounds(CButtonSize - 11, 3, 8, 8);
+  FUpdateDot.Visible := False;
   FBtnSettings := AddToolButton(ICO_AJUSTES, 'Configurações', SettingsClick);
   BuildMenu;
 
@@ -2296,6 +2357,7 @@ begin
       end;
     scBlocker:
       begin
+        ApplyAdExtension;
         UpdateShield;
         if (FActive <> nil) and (FActive.Url <> '') then
           FActive.Engine.Reload;
@@ -2313,6 +2375,23 @@ begin
         FStage.SetShown(FSettings.NecoShown);
         // As Necos dos painéis e da página de erro param de desenhar no próximo quadro.
         Invalidate;
+      end;
+    scDefaultBrowser:
+      begin
+        // O Windows não deixa se pôr como padrão sozinho: registra e abre a tela onde
+        // a pessoa confirma. Nada a gravar no settings.json.
+        if not NecoRegisterBrowser then
+          NecoTrace('navegador padrao: registro recusado');
+        NecoOpenDefaultAppsSettings;
+        Exit;
+      end;
+    scAutoUpdate:
+      if FUpdateTimer <> nil then
+      begin
+        // Ligou: procura daqui a pouco, sem esperar a próxima abertura.
+        FUpdateTimer.Interval := 2000;
+        FUpdateTimer.Enabled := FSettings.AutoUpdate;
+        RefreshUpdateInfo;
       end;
   end;
   SaveSettings;
@@ -2412,6 +2491,13 @@ begin
     FBtnMenu.Hint := 'Mais opções' + sLineBreak + 'Bloqueador desligado';
     N := 0;
   end;
+  FUpdateDot.Visible := FUpdateVersion <> '';
+  if FUpdateVersion <> '' then
+  begin
+    FUpdateDot.Fill.Color := Palette.Accent;
+    FBtnMenu.Hint := FBtnMenu.Hint + sLineBreak + 'Versão ' + FUpdateVersion +
+      ' pronta: reinicie para atualizar';
+  end;
   FShieldBadge.Visible := N > 0;
   if N > 0 then
   begin
@@ -2435,6 +2521,7 @@ begin
   except
     // Sem disco: a escolha vale até fechar o app.
   end;
+  ApplyAdExtension;
   UpdateShield;
   FPanelSettings.Refresh;
   // Como as extensões de bloqueio: a página recarrega já com a nova regra.
@@ -2454,6 +2541,8 @@ const
   CMenuDownloads = 3;
   CMenuOpenFile = 4;
   CMenuTheme = 5;
+  CMenuUpdate = 6;
+  CMenuLater = 7;
 
 procedure TFormMain.BuildMenu;
 begin
@@ -2480,65 +2569,83 @@ begin
     FMenu.IsOpen := False;
 end;
 
-procedure TFormMain.MenuClick(Sender: TObject);
-var
-  Y: Single;
-  N: Integer;
-
-  procedure AddRow(ATag: Integer; const AIcon, AText, ARight: string; AIconColor: TAlphaColor;
-    AMarked: Boolean);
-  var
-    R: TRectangle;
-    Ico: FMX.Objects.TPath;
-    L: TLabel;
-  begin
-    R := TRectangle.Create(Self);
-    R.Parent := FMenuBox;
-    R.SetBounds(4, Y, CMenuWidth - 8, CMenuRowHeight);
-    R.XRadius := 6;
-    R.YRadius := 6;
-    R.Stroke.Kind := TBrushKind.None;
-    R.Fill.Kind := TBrushKind.Solid;
-    // Painel aberto fica marcado, como os botões faziam.
-    if AMarked then
-      R.Fill.Color := Palette.Pressed
-    else
-      R.Fill.Color := TAlphaColors.Null;
-    R.TagFloat := Ord(AMarked); // a cor de volta depois do mouse
-    R.HitTest := True;
-    R.Tag := ATag;
-    R.OnClick := MenuRowClick;
-    R.OnMouseEnter := MenuRowHover;
-    R.OnMouseLeave := MenuRowHover;
-
-    Ico := FMX.Objects.TPath.Create(Self);
-    Ico.Parent := R;
-    Ico.HitTest := False;
-    Ico.SetBounds(12, (CMenuRowHeight - 18) / 2, 18, 18);
-    Ico.WrapMode := TPathWrapMode.Fit;
-    Ico.Fill.Kind := TBrushKind.None;
-    Ico.Stroke.Thickness := 1.8;
-    Ico.Stroke.Cap := TStrokeCap.Round;
-    Ico.Stroke.Join := TStrokeJoin.Round;
-    Ico.Stroke.Color := AIconColor;
-    Ico.Data.Data := AIcon;
-
-    if ARight <> '' then
-    begin
-      L := NecoNewLabel(Self, R, ARight, 12, Palette.TextMuted);
-      L.Align := TAlignLayout.Right;
-      L.Width := 110;
-      L.Margins.Right := 12;
-      L.TextSettings.HorzAlign := TTextAlign.Trailing;
-    end;
-    L := NecoNewLabel(Self, R, AText, 13.5);
-    L.Align := TAlignLayout.Client;
-    L.Margins.Rect := TRectF.Create(42, 0, 8, 0);
-    Y := Y + CMenuRowHeight;
-  end;
-
+procedure TFormMain.ClearMenu;
 var
   C: TFmxObject;
+begin
+  while FMenuBox.ChildrenCount > 0 do
+  begin
+    C := FMenuBox.Children[FMenuBox.ChildrenCount - 1];
+    C.Free;
+  end;
+  FMenuY := 4;
+end;
+
+procedure TFormMain.AddMenuRow(ATag: Integer; const AIcon, AText, ARight: string;
+  AIconColor: TAlphaColor; AMarked: Boolean);
+var
+  R: TRectangle;
+  Ico: FMX.Objects.TPath;
+  L: TLabel;
+begin
+  R := TRectangle.Create(Self);
+  R.Parent := FMenuBox;
+  R.SetBounds(4, FMenuY, CMenuWidth - 8, CMenuRowHeight);
+  R.XRadius := 6;
+  R.YRadius := 6;
+  R.Stroke.Kind := TBrushKind.None;
+  R.Fill.Kind := TBrushKind.Solid;
+  // Painel aberto fica marcado, como os botões faziam.
+  if AMarked then
+    R.Fill.Color := Palette.Pressed
+  else
+    R.Fill.Color := TAlphaColors.Null;
+  R.TagFloat := Ord(AMarked); // a cor de volta depois do mouse
+  R.HitTest := True;
+  R.Tag := ATag;
+  R.OnClick := MenuRowClick;
+  R.OnMouseEnter := MenuRowHover;
+  R.OnMouseLeave := MenuRowHover;
+
+  Ico := FMX.Objects.TPath.Create(Self);
+  Ico.Parent := R;
+  Ico.HitTest := False;
+  Ico.SetBounds(12, (CMenuRowHeight - 18) / 2, 18, 18);
+  Ico.WrapMode := TPathWrapMode.Fit;
+  Ico.Fill.Kind := TBrushKind.None;
+  Ico.Stroke.Thickness := 1.8;
+  Ico.Stroke.Cap := TStrokeCap.Round;
+  Ico.Stroke.Join := TStrokeJoin.Round;
+  Ico.Stroke.Color := AIconColor;
+  Ico.Data.Data := AIcon;
+
+  if ARight <> '' then
+  begin
+    L := NecoNewLabel(Self, R, ARight, 12, Palette.TextMuted);
+    L.Align := TAlignLayout.Right;
+    L.Width := 110;
+    L.Margins.Right := 12;
+    L.TextSettings.HorzAlign := TTextAlign.Trailing;
+  end;
+  L := NecoNewLabel(Self, R, AText, 13.5);
+  L.Align := TAlignLayout.Client;
+  L.Margins.Rect := TRectF.Create(42, 0, 8, 0);
+  FMenuY := FMenuY + CMenuRowHeight;
+end;
+
+procedure TFormMain.OpenMenu;
+begin
+  FMenuBox.Fill.Color := Palette.Toolbar;
+  FMenuBox.Stroke.Color := Palette.FieldBorder;
+  FMenu.Width := CMenuWidth;
+  FMenu.Height := FMenuY + 4;
+  FMenu.PopupFormSize := TSizeF.Create(FMenu.Width, FMenu.Height);
+  FMenu.Popup(False);
+end;
+
+procedure TFormMain.MenuClick(Sender: TObject);
+var
+  N: Integer;
 begin
   if FMenu.IsOpen then
   begin
@@ -2549,39 +2656,34 @@ begin
   // Monta na hora: estado do bloqueador, painel aberto e tema mudam.
   FMenuBox.BeginUpdate;
   try
-    while FMenuBox.ChildrenCount > 0 do
-    begin
-      C := FMenuBox.Children[FMenuBox.ChildrenCount - 1];
-      C.Free;
-    end;
-    Y := 4;
+    ClearMenu;
+    if FUpdateVersion <> '' then
+      AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Reiniciar para atualizar', 'versão ' + FUpdateVersion,
+        Palette.Accent, False);
     N := 0;
     if FActive <> nil then
       N := FActive.BlockedCount;
     if BlockerOn then
-      AddRow(CMenuBlocker, ICO_ESCUDO, 'Bloqueador ligado', Format('%d barrados', [N]),
+      AddMenuRow(CMenuBlocker, ICO_ESCUDO, 'Bloqueador ligado', Format('%d barrados', [N]),
         Palette.Shield, False)
     else
-      AddRow(CMenuBlocker, ICO_ESCUDO_OFF, 'Bloqueador desligado', 'clique para ligar',
+      AddMenuRow(CMenuBlocker, ICO_ESCUDO_OFF, 'Bloqueador desligado', 'clique para ligar',
         Palette.TextMuted, False);
-    AddRow(CMenuBookmarks, ICO_MARCADOR, 'Favoritos', 'Ctrl+Shift+O', Palette.Text,
+    AddMenuRow(CMenuBookmarks, ICO_MARCADOR, 'Favoritos', 'Ctrl+Shift+O', Palette.Text,
       FPanelBookmarks.Visible);
-    AddRow(CMenuHistory, ICO_HISTORICO, 'Histórico', 'Ctrl+H', Palette.Text, FPanelHistory.Visible);
-    AddRow(CMenuDownloads, ICO_BAIXAR, 'Downloads', 'Ctrl+J', Palette.Text, FPanelDownloads.Visible);
-    AddRow(CMenuOpenFile, ICO_ARQUIVO, 'Abrir arquivo', 'Ctrl+O', Palette.Text, False);
+    AddMenuRow(CMenuHistory, ICO_HISTORICO, 'Histórico', 'Ctrl+H', Palette.Text,
+      FPanelHistory.Visible);
+    AddMenuRow(CMenuDownloads, ICO_BAIXAR, 'Downloads', 'Ctrl+J', Palette.Text,
+      FPanelDownloads.Visible);
+    AddMenuRow(CMenuOpenFile, ICO_ARQUIVO, 'Abrir arquivo', 'Ctrl+O', Palette.Text, False);
     if CurrentTheme = ntDark then
-      AddRow(CMenuTheme, ICO_SOL, 'Tema claro', '', Palette.Text, False)
+      AddMenuRow(CMenuTheme, ICO_SOL, 'Tema claro', '', Palette.Text, False)
     else
-      AddRow(CMenuTheme, ICO_LUA, 'Tema escuro', '', Palette.Text, False);
+      AddMenuRow(CMenuTheme, ICO_LUA, 'Tema escuro', '', Palette.Text, False);
   finally
     FMenuBox.EndUpdate;
   end;
-  FMenuBox.Fill.Color := Palette.Toolbar;
-  FMenuBox.Stroke.Color := Palette.FieldBorder;
-  FMenu.Width := CMenuWidth;
-  FMenu.Height := Y + 4;
-  FMenu.PopupFormSize := TSizeF.Create(FMenu.Width, FMenu.Height);
-  FMenu.Popup(False);
+  OpenMenu;
 end;
 
 procedure TFormMain.MenuRowHover(Sender: TObject);
@@ -2623,8 +2725,203 @@ begin
           OpenFileClick(nil);
         CMenuTheme:
           ThemeClick(nil);
+        CMenuUpdate:
+          begin
+            FRestartForUpdate := True;
+            Close; // FormClose grava a sessão, troca o exe e abre o novo
+          end;
+        // CMenuLater: só fecha o aviso; a troca fica para quando fechar o navegador
       end;
     end);
+end;
+
+{ Atualização automática }
+
+function ShortVersion(const AVersion: string): string;
+begin
+  // 0.2.0.0 -> 0.2.0
+  Result := AVersion;
+  if (Length(Result.Split(['.'])) = 4) and Result.EndsWith('.0') then
+    SetLength(Result, Length(Result) - 2);
+end;
+
+procedure TFormMain.StartUpdater;
+var
+  P: string;
+begin
+  // Só a janela dona da sessão: duas janelas não baixam nem trocam o exe juntas.
+  if not FSessionOwner then
+    Exit;
+  FUpdater := TNecoUpdater.Create(FSettings.UpdateDir);
+  NecoCleanupOldExe(ParamStr(0));
+  // Baixada numa vez anterior e ainda não trocada (o navegador não fechou direito, ou a
+  // pasta do exe não deixou): avisa de novo.
+  P := FUpdater.PendingVersion;
+  if (P <> '') and (NecoCompareVersions(P, NecoAppVersion) > 0) then
+    FUpdateVersion := P;
+  FUpdateTimer := TTimer.Create(Self);
+  FUpdateTimer.Interval := 10000; // primeira consulta com a abertura já assentada
+  FUpdateTimer.OnTimer := UpdateTick;
+  FUpdateTimer.Enabled := FSettings.AutoUpdate;
+  RefreshUpdateInfo;
+end;
+
+procedure TFormMain.UpdateTick(Sender: TObject);
+begin
+  FUpdateTimer.Interval := 6 * 60 * 60 * 1000; // depois, de 6 em 6 horas
+  if FShuttingDown or not FSettings.AutoUpdate or FUpdater.Busy then
+    Exit;
+  FUpdater.Check(NecoAppVersion, UpdateReady);
+  RefreshUpdateInfo;
+end;
+
+procedure TFormMain.UpdateReady(const AVersion: string);
+var
+  Novo: Boolean;
+begin
+  // Thread principal, ao fim de cada consulta ('' = nada novo ou falhou).
+  if FShuttingDown then
+    Exit;
+  Novo := (AVersion <> '') and (AVersion <> FUpdateVersion);
+  if Novo then
+    FUpdateVersion := AVersion;
+  RefreshUpdateInfo;
+  if Novo then
+  begin
+    UpdateShield; // bolinha na seta
+    ShowUpdateNotice;
+  end;
+end;
+
+procedure TFormMain.ShowUpdateNotice;
+begin
+  // Não interrompe: só abre o aviso com a janela em uso normal e nada aberto por cima.
+  // Senão fica só a bolinha na seta e o item no menu.
+  if FFull or FMenu.IsOpen or ((FSuggest <> nil) and FSuggest.IsOpen) or
+    not NecoFrameIsForeground(Self) then
+    Exit;
+  FMenuBox.BeginUpdate;
+  try
+    ClearMenu;
+    AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Versão ' + FUpdateVersion + ' pronta',
+      'reiniciar agora', Palette.Accent, False);
+    AddMenuRow(CMenuLater, ICO_HISTORICO, 'Depois', 'troca ao fechar', Palette.TextMuted, False);
+  finally
+    FMenuBox.EndUpdate;
+  end;
+  OpenMenu;
+end;
+
+procedure TFormMain.RefreshUpdateInfo;
+var
+  S: string;
+begin
+  if FPanelSettings = nil then
+    Exit;
+  S := 'Versão ' + ShortVersion(NecoAppVersion);
+  if FUpdater = nil then
+    S := S + ' (outra janela cuida da atualização)'
+  else if FUpdateVersion <> '' then
+    S := S + ' · ' + FUpdateVersion + ' baixada: troca ao reiniciar'
+  else if not FSettings.AutoUpdate then
+    S := S + ' · desligado'
+  else if FUpdater.Busy then
+    S := S + ' · procurando versão nova...'
+  else
+    S := S + ' · procura versão nova ao abrir';
+  FPanelSettings.SetUpdateInfo(S);
+end;
+
+{ Navegador padrão }
+
+procedure TFormMain.FormActivated(Sender: TObject);
+begin
+  if not FShuttingDown then
+    RefreshDefaultBrowser;
+end;
+
+procedure TFormMain.RefreshDefaultBrowser;
+begin
+  if FPanelSettings <> nil then
+    FPanelSettings.SetDefaultBrowser(NecoIsDefaultBrowser);
+end;
+
+procedure TFormMain.FinishUpdate;
+var
+  Exe: string;
+begin
+  if FUpdater = nil then
+    Exit;
+  Exe := ParamStr(0);
+  // Para o download em curso antes de mexer nos arquivos.
+  FUpdater.Shutdown;
+  // Pediu para reiniciar, ou deixou para depois com a atualização ligada.
+  if (FRestartForUpdate or FSettings.AutoUpdate) and (FUpdater.PendingVersion <> '') and
+    (NecoCompareVersions(FUpdater.PendingVersion, NecoAppVersion) > 0) then
+    FUpdater.Apply(Exe);
+  FreeAndNil(FUpdater);
+  // Reabre mesmo se a troca falhou: quem clicou em reiniciar espera a janela de volta.
+  if FRestartForUpdate then
+    NecoLaunch(Exe, '--apos-atualizar');
+end;
+
+{ Extensão de bloqueio
+
+  A lista de hosts não pega o YouTube (anúncio e vídeo vêm dos mesmos endereços). O
+  uBlock Origin Lite roda dentro da página e pega. Ele segue o mesmo botão do bloqueador. }
+
+procedure TFormMain.StartAdExtension;
+begin
+  // Só a janela dona da sessão baixa e troca versões: o perfil do motor é um só.
+  if FSessionOwner then
+  begin
+    FAdExt := TNecoAdExtension.Create(System.IOUtils.TPath.Combine(FSettings.WebDataDir, 'extensoes'));
+    FAdFolder := FAdExt.CurrentFolder;
+    FAdTimer := TTimer.Create(Self);
+    FAdTimer.Interval := 15000; // primeira consulta com a abertura já assentada
+    FAdTimer.OnTimer := AdTick;
+    FAdTimer.Enabled := True;
+  end;
+  ApplyAdExtension;
+end;
+
+procedure TFormMain.ApplyAdExtension;
+begin
+  if FShuttingDown then
+    Exit;
+  if FAdExt = nil then
+  begin
+    NecoEngineSetAdExtension('', False, BlockerOn, nil);
+    Exit;
+  end;
+  NecoEngineSetAdExtension(FAdFolder, True, BlockerOn, AdInstalled);
+  // Ligou o bloqueador depois da primeira consulta e a extensão ainda não veio: procura já.
+  if BlockerOn and (FAdFolder = '') and (FAdTimer.Interval > 15000) and not FAdExt.Busy then
+    FAdExt.Check(AdDownloaded);
+end;
+
+procedure TFormMain.AdTick(Sender: TObject);
+begin
+  FAdTimer.Interval := 24 * 60 * 60 * 1000; // depois, uma vez por dia
+  if FShuttingDown or not BlockerOn or FAdExt.Busy then
+    Exit;
+  FAdExt.Check(AdDownloaded);
+end;
+
+procedure TFormMain.AdDownloaded(const AFolder: string);
+begin
+  // Thread principal. '' = nada novo ou falhou.
+  if FShuttingDown or (AFolder = '') then
+    Exit;
+  FAdFolder := AFolder;
+  ApplyAdExtension;
+end;
+
+procedure TFormMain.AdInstalled(const AFolder: string);
+begin
+  // O motor está usando AFolder: as outras versões já podem sair do disco.
+  if not FShuttingDown and (FAdExt <> nil) then
+    FAdExt.Cleanup(AFolder);
 end;
 
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;

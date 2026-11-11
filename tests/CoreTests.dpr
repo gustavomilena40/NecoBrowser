@@ -15,7 +15,10 @@ uses
   Neco.Core.Bookmarks in '..\src\core\Neco.Core.Bookmarks.pas',
   Neco.Core.History in '..\src\core\Neco.Core.History.pas',
   Neco.Core.Settings in '..\src\core\Neco.Core.Settings.pas',
-  Neco.Core.Favicons in '..\src\core\Neco.Core.Favicons.pas';
+  Neco.Core.Favicons in '..\src\core\Neco.Core.Favicons.pas',
+  Neco.Core.Trace in '..\src\core\Neco.Core.Trace.pas',
+  Neco.Core.Updater in '..\src\core\Neco.Core.Updater.pas',
+  Neco.Core.AdExtension in '..\src\core\Neco.Core.AdExtension.pas';
 
 var
   Falhas: Integer = 0;
@@ -268,6 +271,7 @@ begin
     Check(S.NecoShown, 'Neco ligada por padrao');
     Check(S.FormAutofill and S.SavePasswords, 'formularios e senhas ligados por padrao');
     Check(S.ShowBookmarkBar and S.RestoreSession, 'barra de favoritos e sessao ligadas por padrao');
+    Check(S.AutoUpdate, 'atualizacao ligada por padrao');
     Check(not S.LoadSession(SU, SA), 'sem sessao gravada');
     S.SaveSession(['https://a.com/', 'https://b.com/', 'https://c.com/'], 2);
     Check(S2.LoadSession(SU, SA) and (Length(SU) = 3) and (SU[1] = 'https://b.com/') and (SA = 2),
@@ -315,6 +319,100 @@ begin
   Check(Length(TFile.ReadAllBytes(NecoFaviconFile(Dir, 'https://claude.ai/'))) = 1, 'conteudo novo');
 end;
 
+procedure TestarAtualizacao(const APasta: string);
+const
+  J = '{"tag_name":"v0.2.0","draft":false,"prerelease":false,"assets":[' +
+    '{"name":"NecoBrowser-win32.exe","browser_download_url":"https://x/32.exe"},' +
+    '{"name":"NecoBrowser-win64.exe","browser_download_url":"https://x/64.exe"},' +
+    '{"name":"NecoBrowser-win64.exe.sha256","browser_download_url":"https://x/64.sha256"}]}';
+  H = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+var
+  R: TNecoRelease;
+  U: TNecoUpdater;
+  Exe, Dir: string;
+begin
+  Writeln('Atualizacao');
+  Check(NecoCompareVersions('0.2.0', '0.1.0.0') > 0, 'versao maior');
+  Check(NecoCompareVersions('v0.1.0', '0.1.0.0') = 0, 'v e .0 no fim sao iguais');
+  Check(NecoCompareVersions('0.1.9', '0.1.10') < 0, 'compara numero, nao texto');
+  Check(NecoCompareVersions('1.0.0-beta', '1.0.0') = 0, 'sufixo ignorado');
+  Check(NecoParseRelease(J, 'NecoBrowser-win64.exe', R) and (R.Version = '0.2.0') and
+    (R.ExeUrl = 'https://x/64.exe') and (R.ShaUrl = 'https://x/64.sha256'), 'release lida');
+  Check(not NecoParseRelease(J, 'NecoBrowser-win32.exe', R), 'sem .sha256 nao atualiza');
+  Check(not NecoParseRelease(StringReplace(J, '"prerelease":false', '"prerelease":true', []),
+    'NecoBrowser-win64.exe', R), 'pre-release ignorada');
+  Check(not NecoParseRelease('lixo', 'NecoBrowser-win64.exe', R), 'JSON invalido');
+  CheckEq(NecoParseSha256(UpperCase(H) + '  NecoBrowser-win64.exe' + sLineBreak), H, 'sha256 com nome');
+  CheckEq(NecoParseSha256('abc'), '', 'sha256 curto');
+
+  // Troca do exe: arquivos falsos numa pasta temporaria.
+  Dir := TPath.Combine(APasta, 'upd');
+  Exe := TPath.Combine(APasta, 'NecoBrowser.exe');
+  TFile.WriteAllText(Exe, 'velho');
+  U := TNecoUpdater.Create(Dir);
+  try
+    Check(U.PendingVersion = '', 'nada pendente');
+    Check(not U.Apply(Exe), 'sem pendente nao troca');
+    ForceDirectories(Dir);
+    TFile.WriteAllText(TPath.Combine(Dir, 'NecoBrowser-0.2.0.exe'), 'novo');
+    TFile.WriteAllText(TPath.Combine(Dir, 'pending.json'),
+      '{"version":"0.2.0","file":"NecoBrowser-0.2.0.exe"}');
+    CheckEq(U.PendingVersion, '0.2.0', 'pendente lida');
+    Check(U.Apply(Exe), 'troca');
+    CheckEq(TFile.ReadAllText(Exe), 'novo', 'exe novo no lugar');
+    Check(TFile.Exists(TPath.Combine(APasta, 'NecoBrowser.old.exe')), 'antigo renomeado');
+    Check(U.PendingVersion = '', 'pendente apagada');
+    NecoCleanupOldExe(Exe);
+    Check(not TFile.Exists(TPath.Combine(APasta, 'NecoBrowser.old.exe')), 'antigo limpo');
+  finally
+    U.Free;
+  end;
+end;
+
+procedure TestarExtensao(const APasta: string);
+const
+  H = '79236476535b63706749e088e0ce99bb31d3d2ff15fabb4d7e990be23d6e4613';
+var
+  J: string;
+  R: TNecoAdRelease;
+  X: TNecoAdExtension;
+  Dir: string;
+begin
+  Writeln('Extensao (uBOL)');
+  // Mesmo formato do /releases/latest do uBOL-home.
+  J := '{"tag_name":"2026.1103.1743","draft":false,"prerelease":false,"assets":[' +
+    '{"name":"uBOLite_2026.1103.1743.firefox.signed.xpi","digest":"sha256:' + StringOfChar('a', 64) +
+    '","browser_download_url":"https://x/ff.xpi"},' +
+    '{"name":"uBOLite_2026.1103.1743.chromium.zip","digest":"sha256:' + H +
+    '","browser_download_url":"https://x/chromium.zip"}]}';
+  Check(NecoParseAdRelease(J, R) and (R.Version = '2026.1103.1743') and
+    (R.ZipUrl = 'https://x/chromium.zip') and (R.Sha256 = H), 'release lida (zip do chromium)');
+  Check(not NecoParseAdRelease(StringReplace(J, '"digest":"sha256:' + H + '",', '', []), R),
+    'sem digest nao baixa');
+  Check(not NecoParseAdRelease(StringReplace(J, '2026.1103.1743"', '..\x"', []), R),
+    'versao com caminho recusada');
+  Check(not NecoParseAdRelease(StringReplace(J, '"prerelease":false', '"prerelease":true', []), R),
+    'pre-release ignorada');
+
+  Dir := TPath.Combine(APasta, 'ext');
+  X := TNecoAdExtension.Create(Dir);
+  try
+    CheckEq(X.CurrentFolder, '', 'nada baixado');
+    ForceDirectories(TPath.Combine(Dir, 'uBOLite-1'));
+    ForceDirectories(TPath.Combine(Dir, 'uBOLite-2'));
+    ForceDirectories(TPath.Combine(Dir, 'uBOLite-3'));
+    TFile.WriteAllText(TPath.Combine(Dir, 'uBOLite-3\manifest.json'), '{}');
+    TFile.WriteAllText(TPath.Combine(Dir, 'current.json'), '{"version":"3"}');
+    CheckEq(X.CurrentFolder, TPath.Combine(Dir, 'uBOLite-3'), 'pasta atual');
+    X.Cleanup(TPath.Combine(Dir, 'uBOLite-2'));
+    Check(not TDirectory.Exists(TPath.Combine(Dir, 'uBOLite-1')) and
+      TDirectory.Exists(TPath.Combine(Dir, 'uBOLite-2')) and
+      TDirectory.Exists(TPath.Combine(Dir, 'uBOLite-3')), 'limpeza guarda a em uso e a atual');
+  finally
+    X.Free;
+  end;
+end;
+
 var
   Pasta: string;
 begin
@@ -330,6 +428,8 @@ begin
       TestarSugestoes(Pasta);
       TestarSettings(Pasta);
       TestarFavicons(Pasta);
+      TestarAtualizacao(Pasta);
+      TestarExtensao(Pasta);
     except
       on E: Exception do
       begin

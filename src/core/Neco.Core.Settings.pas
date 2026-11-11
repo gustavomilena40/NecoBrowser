@@ -24,6 +24,7 @@ type
     FSavePasswords: Boolean;
     FShowBookmarkBar: Boolean;
     FRestoreSession: Boolean;
+    FAutoUpdate: Boolean;
     FHomeUrl: string;
     FCustomDir: Boolean;
     function GetSettingsFile: string;
@@ -60,6 +61,10 @@ type
     /// Ao abrir, reabre as abas que estavam abertas ao fechar.
     property RestoreSession: Boolean read FRestoreSession write FRestoreSession;
     property SessionFile: string read GetSessionFile;
+    /// Procura versão nova no GitHub, baixa e troca o exe ao reiniciar.
+    property AutoUpdate: Boolean read FAutoUpdate write FAutoUpdate;
+    /// Onde a atualização baixada espera a troca (fora da pasta que roaming sincroniza).
+    function UpdateDir: string;
     /// Grava as abas abertas (URLs na ordem da faixa) e qual estava ativa.
     procedure SaveSession(const AUrls: TArray<string>; AActive: Integer);
     /// Lê a sessão gravada. False = não há (ou o arquivo é inválido).
@@ -100,6 +105,7 @@ begin
   FSavePasswords := True;
   FShowBookmarkBar := True;
   FRestoreSession := True;
+  FAutoUpdate := True;
   FHomeUrl := CDefaultHome;
 end;
 
@@ -126,6 +132,11 @@ begin
     Result := TPath.GetDownloadsPath;
   if Result = '' then
     Result := TPath.Combine(FDataDir, 'Downloads');
+end;
+
+function TNecoSettings.UpdateDir: string;
+begin
+  Result := TPath.Combine(FWebDataDir, 'update');
 end;
 
 function TNecoSettings.GetSessionFile: string;
@@ -197,6 +208,7 @@ begin
     O.AddPair('savePasswords', TJSONBool.Create(FSavePasswords));
     O.AddPair('bookmarkBar', TJSONBool.Create(FShowBookmarkBar));
     O.AddPair('restoreSession', TJSONBool.Create(FRestoreSession));
+    O.AddPair('autoUpdate', TJSONBool.Create(FAutoUpdate));
     O.AddPair('home', FHomeUrl);
     Result := O.Format(2);
   finally
@@ -223,6 +235,7 @@ begin
     FSavePasswords := NecoJsonBool(O, 'savePasswords', True);
     FShowBookmarkBar := NecoJsonBool(O, 'bookmarkBar', True);
     FRestoreSession := NecoJsonBool(O, 'restoreSession', True);
+    FAutoUpdate := NecoJsonBool(O, 'autoUpdate', True);
     FHomeUrl := NecoJsonStr(O, 'home', CDefaultHome);
     if FHomeUrl = '' then
       FHomeUrl := CDefaultHome;

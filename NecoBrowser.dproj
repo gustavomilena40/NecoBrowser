@@ -93,6 +93,9 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="src\core\Neco.Core.Bookmarks.pas"/>
         <DCCReference Include="src\core\Neco.Core.History.pas"/>
         <DCCReference Include="src\core\Neco.Core.Settings.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Favicons.pas"/>
+        <DCCReference Include="src\core\Neco.Core.Updater.pas"/>
+        <DCCReference Include="src\core\Neco.Core.AdExtension.pas"/>
         <DCCReference Include="src\engine\Neco.Engine.Intf.pas"/>
         <DCCReference Include="src\engine\Neco.Engine.WebView2.pas"/>
         <DCCReference Include="src\engine\Neco.Engine.Factory.pas"/>
@@ -105,6 +108,9 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="src\ui\Neco.UI.Bookmarks.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Settings.pas"/>
         <DCCReference Include="src\ui\Neco.UI.ErrorView.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.BookmarkBar.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.History.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.DefaultBrowser.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Main.pas">
             <Form>FormMain</Form>
             <FormType>fmx</FormType>

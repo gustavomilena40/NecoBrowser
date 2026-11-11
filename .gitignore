@@ -15,3 +15,7 @@ __recovery/
 tests/Win32/
 tests/Win64/
 tests/*.exe
+
+# Fora do Git (decisão de 2026-11-11)
+Sprites/
+graphify-out/

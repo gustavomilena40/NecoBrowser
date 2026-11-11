@@ -28,6 +28,16 @@ procedure NecoEngineShutdown;
 /// A resposta chega depois, na thread principal.
 procedure NecoEngineQueryMemory(const ACallback: TNecoMemoryCallback);
 
+type
+  TNecoExtInstalledEvent = reference to procedure(const AFolder: string);
+
+/// Extensão de bloqueio de anúncios (uBlock Origin Lite) para todas as abas.
+/// AFolder: pasta descompactada ('' = ainda não baixada). AManage: este processo instala e
+/// troca versões (só a janela dona da sessão); sem ele, só liga ou desliga a instalada.
+/// AOnInstalled: thread principal, com a pasta que ficou instalada.
+procedure NecoEngineSetAdExtension(const AFolder: string; AManage, AEnabled: Boolean;
+  const AOnInstalled: TNecoExtInstalledEvent);
+
 implementation
 
 uses
@@ -75,6 +85,14 @@ procedure NecoEngineQueryMemory(const ACallback: TNecoMemoryCallback);
 begin
 {$IFDEF MSWINDOWS}
   NecoWV2QueryMemory(ACallback);
+{$ENDIF}
+end;
+
+procedure NecoEngineSetAdExtension(const AFolder: string; AManage, AEnabled: Boolean;
+  const AOnInstalled: TNecoExtInstalledEvent);
+begin
+{$IFDEF MSWINDOWS}
+  NecoWV2SetAdExtension(AFolder, AManage, AEnabled, TNecoWV2ExtInstalled(AOnInstalled));
 {$ENDIF}
 end;
 

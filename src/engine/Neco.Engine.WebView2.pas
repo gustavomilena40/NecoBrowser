@@ -43,6 +43,17 @@ procedure NecoWV2Shutdown;
 /// Mede a memória do exe e de todos os processos do WebView2. A resposta chega depois,
 /// na thread principal (não chega se o app fechar antes).
 procedure NecoWV2QueryMemory(const ACallback: TNecoMemoryCallback);
+
+type
+  TNecoWV2ExtInstalled = reference to procedure(const AFolder: string);
+
+/// Extensão de bloqueio (uBlock Origin Lite), no perfil que todas as abas dividem.
+/// AFolder: pasta descompactada da versão a usar ('' = ainda não baixada).
+/// AManage: este processo instala, troca e remove versões (só a janela dona da sessão).
+/// Sem AManage só liga ou desliga a que já está instalada.
+/// AOnInstalled: thread principal, com a pasta que ficou instalada (para apagar as antigas).
+procedure NecoWV2SetAdExtension(const AFolder: string; AManage, AEnabled: Boolean;
+  const AOnInstalled: TNecoWV2ExtInstalled);
 {$ENDIF}
 
 implementation
@@ -50,8 +61,9 @@ implementation
 {$IFDEF MSWINDOWS}
 uses
   System.SysUtils, System.Classes, System.Types, System.Generics.Collections, System.IOUtils,
+  System.JSON, System.StrUtils,
   Winapi.Messages, Winapi.ActiveX, Winapi.CommCtrl, Winapi.WebView2, Winapi.EdgeUtils,
-  Neco.Core.Trace;
+  Neco.Core.Files, Neco.Core.Trace;
 
 // A WebView2Loader.dll da arquitetura deste exe vai embutida (tools\neco_embutidos.py):
 // o exe roda sozinho em outra máquina, só com o WebView2 Runtime instalado.
@@ -245,6 +257,39 @@ type
     function Invoke(errorCode: HResult; const AEnv: ICoreWebView2Environment): HResult; stdcall;
   end;
 
+  /// As opções da RTL não têm a interface 6 (extensões); o loader pergunta por ela com
+  /// QueryInterface, então basta a classe também implementá-la.
+  TNecoWV2EnvOptions = class(TCoreWebView2EnvironmentOptions, ICoreWebView2EnvironmentOptions6)
+  private
+    FExtensions: Integer;
+  public
+    function Get_AreBrowserExtensionsEnabled(out value: Integer): HResult; stdcall;
+    function Set_AreBrowserExtensionsEnabled(value: Integer): HResult; stdcall;
+  end;
+
+  TNecoWV2ExtList = class(TInterfacedObject, ICoreWebView2ProfileGetBrowserExtensionsCompletedHandler)
+  private
+    function Invoke(errorCode: HResult; const AList: ICoreWebView2BrowserExtensionList): HResult; stdcall;
+  end;
+
+  TNecoWV2ExtAdded = class(TInterfacedObject, ICoreWebView2ProfileAddBrowserExtensionCompletedHandler)
+  private
+    FFolder: string;
+    function Invoke(errorCode: HResult; const AExt: ICoreWebView2BrowserExtension): HResult; stdcall;
+  public
+    constructor Create(const AFolder: string);
+  end;
+
+  /// Fim de Remove e de Enable: só registra no rastro.
+  TNecoWV2ExtDone = class(TInterfacedObject, ICoreWebView2BrowserExtensionRemoveCompletedHandler,
+    ICoreWebView2BrowserExtensionEnableCompletedHandler)
+  private
+    FWhat: string;
+    function Invoke(errorCode: HResult): HResult; stdcall;
+  public
+    constructor Create(const AWhat: string);
+  end;
+
   TEnvState = (esNone, esCreating, esReady, esFailed);
 
 const
@@ -261,6 +306,15 @@ var
   GEngines: TList<TNecoWV2Engine>;
   GDownloads: TList<TNecoWV2Download>;
   GHooked: TList<HWND>;
+  // Extensão de bloqueio. O perfil é um só para todas as abas: guarda o da primeira pronta.
+  GExtEnvOn: Boolean = True;       // False se o ambiente teve de ser criado sem extensões
+  GExtProfile: ICoreWebView2Profile7;
+  GExtConfigured: Boolean;         // a UI já disse o que quer
+  GExtFolder: string;
+  GExtManage: Boolean;
+  GExtEnabled: Boolean = True;
+  GExtOnInstalled: TNecoWV2ExtInstalled;
+  GExtBusy, GExtDirty: Boolean;
 
 { Utilitários }
 
@@ -418,6 +472,7 @@ end;
 
 procedure EnsureEnvironment;
 var
+  O: TNecoWV2EnvOptions;
   Opts: ICoreWebView2EnvironmentOptions;
   HR: HResult;
 begin
@@ -429,7 +484,9 @@ begin
     GEnvState := esFailed;
     Exit;
   end;
-  Opts := TCoreWebView2EnvironmentOptions.Create;
+  O := TNecoWV2EnvOptions.Create;
+  O.FExtensions := Ord(GExtEnvOn);
+  Opts := O;
   // Vazia, o loader recusa com E_INVALIDARG. É a versão mínima do import da RTL do Delphi 13
   // (a mesma que o Vcl.Edge usa).
   Opts.Set_TargetCompatibleBrowserVersion(CTargetBrowserVersion);
@@ -460,11 +517,22 @@ var
 begin
   Result := S_OK;
   try
+    // ERROR_INVALID_STATE: o motor já está aberto (outra janela, versão antiga) com opções
+    // diferentes. Sem extensões ele abre; perde só o bloqueio do YouTube até reiniciar.
+    if Failed(errorCode) and GExtEnvOn and (errorCode = HResult($8007139F)) then
+    begin
+      NecoTrace('ambiente: motor ja aberto sem extensoes; tentando sem elas');
+      GExtEnvOn := False;
+      GEnvState := esNone;
+      EnsureEnvironment;
+      if GEnvState <> esFailed then
+        Exit; // a nova resposta chega por outro Invoke
+    end;
     if Succeeded(errorCode) and (AEnv <> nil) then
     begin
       GEnv := AEnv;
       GEnvState := esReady;
-      NecoTrace('ambiente pronto');
+      NecoTrace(Format('ambiente pronto (extensoes=%d)', [Ord(GExtEnvOn)]));
     end
     else
     begin
@@ -487,6 +555,269 @@ begin
     end;
   except
     // Nunca deixar exceção atravessar a fronteira COM.
+  end;
+end;
+
+{ TNecoWV2EnvOptions }
+
+function TNecoWV2EnvOptions.Get_AreBrowserExtensionsEnabled(out value: Integer): HResult;
+begin
+  value := FExtensions;
+  Result := S_OK;
+end;
+
+function TNecoWV2EnvOptions.Set_AreBrowserExtensionsEnabled(value: Integer): HResult;
+begin
+  FExtensions := value;
+  Result := S_OK;
+end;
+
+{ Extensão de bloqueio
+
+  Ciclo (sempre na thread principal, uma rodada por vez): lista as extensões do perfil.
+  A instalada por nós é reconhecida pelo id gravado em neco-extensao.json, ao lado dos
+  dados do motor (o id de extensão descompactada depende da pasta, então muda a cada
+  versão). Mesma pasta: só liga ou desliga. Pasta nova: remove a antiga e instala a nova. }
+
+function ExtStateFile: string;
+begin
+  Result := TPath.Combine(GOptions.UserDataFolder, 'neco-extensao.json');
+end;
+
+procedure ExtLoadState(out AId, AFolder: string);
+var
+  O: TJSONObject;
+begin
+  AId := '';
+  AFolder := '';
+  O := NecoParseObject(NecoLoadText(ExtStateFile));
+  if O = nil then
+    Exit;
+  try
+    AId := NecoJsonStr(O, 'id', '');
+    AFolder := NecoJsonStr(O, 'folder', '');
+  finally
+    O.Free;
+  end;
+end;
+
+procedure ExtSaveState(const AId, AFolder: string);
+var
+  O: TJSONObject;
+begin
+  O := TJSONObject.Create;
+  try
+    O.AddPair('id', AId);
+    O.AddPair('folder', AFolder);
+    try
+      NecoSaveTextAtomic(ExtStateFile, O.Format(2));
+    except
+      on E: Exception do
+        NecoTrace('extensao: nao gravou o estado: ' + E.Message);
+    end;
+  finally
+    O.Free;
+  end;
+end;
+
+procedure ExtSync; forward;
+
+procedure ExtFinish;
+begin
+  GExtBusy := False;
+  if GExtDirty then
+    ExtSync;
+end;
+
+procedure ExtSync;
+begin
+  if (GExtProfile = nil) or not GExtConfigured then
+    Exit;
+  if GExtBusy then
+  begin
+    GExtDirty := True; // a rodada em curso termina e faz outra com o pedido novo
+    Exit;
+  end;
+  GExtBusy := True;
+  GExtDirty := False;
+  if Failed(GExtProfile.GetBrowserExtensions(TNecoWV2ExtList.Create)) then
+    ExtFinish;
+end;
+
+procedure ExtApplyEnabled(const AExt: ICoreWebView2BrowserExtension);
+var
+  On: Integer;
+begin
+  if Failed(AExt.Get_IsEnabled(On)) then
+    Exit;
+  if (On <> 0) <> GExtEnabled then
+    AExt.Enable(Ord(GExtEnabled), TNecoWV2ExtDone.Create(Format('enable=%d', [Ord(GExtEnabled)])));
+end;
+
+procedure ExtAttach(const AWebView: ICoreWebView2);
+var
+  W13: ICoreWebView2_13;
+  P: ICoreWebView2Profile;
+  P7: ICoreWebView2Profile7;
+begin
+  if (GExtProfile <> nil) or not GExtEnvOn then
+    Exit;
+  if Supports(AWebView, ICoreWebView2_13, W13) and Succeeded(W13.Get_Profile(P)) and
+    Supports(P, ICoreWebView2Profile7, P7) then
+  begin
+    GExtProfile := P7;
+    ExtSync;
+  end
+  else
+  begin
+    NecoTrace('extensao: runtime sem suporte a extensoes');
+    GExtEnvOn := False; // não tenta de novo a cada aba
+  end;
+end;
+
+procedure NecoWV2SetAdExtension(const AFolder: string; AManage, AEnabled: Boolean;
+  const AOnInstalled: TNecoWV2ExtInstalled);
+begin
+  GExtConfigured := True;
+  GExtFolder := AFolder;
+  GExtManage := AManage;
+  GExtEnabled := AEnabled;
+  GExtOnInstalled := AOnInstalled;
+  ExtSync;
+end;
+
+{ TNecoWV2ExtList }
+
+function TNecoWV2ExtList.Invoke(errorCode: HResult; const AList: ICoreWebView2BrowserExtensionList): HResult;
+var
+  SavedId, SavedFolder, Id, Name: string;
+  N, I: Cardinal;
+  E, Found: ICoreWebView2BrowserExtension;
+  P: PWideChar;
+begin
+  Result := S_OK;
+  try
+    if GExtProfile = nil then
+    begin
+      GExtBusy := False; // fechando
+      Exit;
+    end;
+    if Failed(errorCode) or (AList = nil) or Failed(AList.Get_Count(N)) then
+    begin
+      NecoTrace('extensao: lista falhou ' + HrText(errorCode));
+      ExtFinish;
+      Exit;
+    end;
+    ExtLoadState(SavedId, SavedFolder);
+    Found := nil;
+    if N > 0 then
+      for I := 0 to N - 1 do
+      begin
+        E := nil;
+        if Failed(AList.GetValueAtIndex(I, E)) or (E = nil) then
+          Continue;
+        P := nil;
+        E.Get_id(P);
+        Id := TakeStr(P);
+        if (SavedId <> '') and SameText(Id, SavedId) then
+          Found := E
+        else if GExtManage then
+        begin
+          // Sobra de uma instalação que não chegou a gravar o estado: não fica duplicada.
+          P := nil;
+          E.Get_name(P);
+          Name := TakeStr(P);
+          if ContainsText(Name, 'uBlock') then
+            E.Remove(TNecoWV2ExtDone.Create('sobra removida ' + Id));
+        end;
+      end;
+
+    if (Found <> nil) and (not GExtManage or (GExtFolder = '') or SameText(SavedFolder, GExtFolder)) then
+    begin
+      ExtApplyEnabled(Found);
+      if GExtManage and Assigned(GExtOnInstalled) then
+        GExtOnInstalled(SavedFolder);
+      ExtFinish;
+      Exit;
+    end;
+    if not GExtManage or (GExtFolder = '') or
+      not FileExists(TPath.Combine(GExtFolder, 'manifest.json')) then
+    begin
+      ExtFinish;
+      Exit;
+    end;
+    if Found <> nil then
+      Found.Remove(TNecoWV2ExtDone.Create('versao antiga removida ' + SavedFolder));
+    NecoTrace('extensao: instalando ' + GExtFolder);
+    if Failed(GExtProfile.AddBrowserExtension(PChar(GExtFolder), TNecoWV2ExtAdded.Create(GExtFolder))) then
+      ExtFinish; // senão a rodada termina no TNecoWV2ExtAdded
+  except
+    on Ex: Exception do
+    begin
+      NecoTrace('extensao: erro na lista: ' + Ex.Message);
+      GExtBusy := False;
+    end;
+  end;
+end;
+
+{ TNecoWV2ExtAdded }
+
+constructor TNecoWV2ExtAdded.Create(const AFolder: string);
+begin
+  inherited Create;
+  FFolder := AFolder;
+end;
+
+function TNecoWV2ExtAdded.Invoke(errorCode: HResult; const AExt: ICoreWebView2BrowserExtension): HResult;
+var
+  P: PWideChar;
+  Id: string;
+begin
+  Result := S_OK;
+  try
+    if GExtProfile = nil then
+    begin
+      GExtBusy := False;
+      Exit;
+    end;
+    if Succeeded(errorCode) and (AExt <> nil) then
+    begin
+      P := nil;
+      AExt.Get_id(P);
+      Id := TakeStr(P);
+      ExtSaveState(Id, FFolder);
+      NecoTrace('extensao: instalada ' + Id);
+      ExtApplyEnabled(AExt);
+      if Assigned(GExtOnInstalled) then
+        GExtOnInstalled(FFolder);
+    end
+    else
+      NecoTrace('extensao: instalacao falhou ' + HrText(errorCode));
+    ExtFinish;
+  except
+    on Ex: Exception do
+    begin
+      NecoTrace('extensao: erro ao instalar: ' + Ex.Message);
+      GExtBusy := False;
+    end;
+  end;
+end;
+
+{ TNecoWV2ExtDone }
+
+constructor TNecoWV2ExtDone.Create(const AWhat: string);
+begin
+  inherited Create;
+  FWhat := AWhat;
+end;
+
+function TNecoWV2ExtDone.Invoke(errorCode: HResult): HResult;
+begin
+  Result := S_OK;
+  try
+    NecoTrace(Format('extensao: %s (%s)', [FWhat, HrText(errorCode)]));
+  except
+    // fronteira COM
   end;
 end;
 
@@ -1019,6 +1350,7 @@ begin
   FController.add_GotFocus(FSink, FTokFocus);
 
   ApplyProfile;
+  ExtAttach(FWebView);
   ApplyBounds;
   FController.Set_IsVisible(Ord(FVisible));
   FReady := True;
@@ -1700,6 +2032,11 @@ begin
   for W in GHooked.ToArray do
     RemoveWindowSubclass(W, @NecoParentSubclass, 1);
   GHooked.Clear;
+  // Respostas de extensão que ainda chegarem veem o perfil nil e não fazem nada.
+  GExtProfile := nil;
+  GExtOnInstalled := nil;
+  GExtConfigured := False;
+  GExtBusy := False;
   GEnv := nil;
   GEnvState := esNone;
 end;

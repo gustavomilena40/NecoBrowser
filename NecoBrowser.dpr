@@ -11,6 +11,8 @@ uses
   Neco.Core.History in 'src\core\Neco.Core.History.pas',
   Neco.Core.Settings in 'src\core\Neco.Core.Settings.pas',
   Neco.Core.Favicons in 'src\core\Neco.Core.Favicons.pas',
+  Neco.Core.Updater in 'src\core\Neco.Core.Updater.pas',
+  Neco.Core.AdExtension in 'src\core\Neco.Core.AdExtension.pas',
   Neco.Engine.Intf in 'src\engine\Neco.Engine.Intf.pas',
   Neco.Engine.WebView2 in 'src\engine\Neco.Engine.WebView2.pas',
   Neco.Engine.Factory in 'src\engine\Neco.Engine.Factory.pas',
@@ -25,6 +27,7 @@ uses
   Neco.UI.ErrorView in 'src\ui\Neco.UI.ErrorView.pas',
   Neco.UI.BookmarkBar in 'src\ui\Neco.UI.BookmarkBar.pas',
   Neco.UI.History in 'src\ui\Neco.UI.History.pas',
+  Neco.UI.DefaultBrowser in 'src\ui\Neco.UI.DefaultBrowser.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
 
 {$R *.res}
