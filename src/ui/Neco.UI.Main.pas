@@ -40,6 +40,10 @@ type
     FRestoreOthers: TArray<TNecoSessionWindow>;
     // teste de memória (NECO_TESTE_ABAS): abre e fecha abas sozinho, em ciclos
     FSelfTest: TTimer;
+    // teste de mover aba (NECO_TESTE_MOVER)
+    FMoveTest: TTimer;
+    FMoveTestStep: Integer;
+    FMoveTestWindow: TFormMain;
     FSelfTestTabs, FSelfTestCycles, FSelfTestCycle, FSelfTestStep: Integer;
 
     // faixa de abas = barra de título (Neco.UI.Frame)
@@ -68,6 +72,11 @@ type
     FMenu: TPopup;
     FMenuBox: TRectangle;
     FMenuY: Single; // onde entra a próxima linha do menu
+    // menu de contexto da aba: a aba e as janelas oferecidas (o menu as guarda até o clique)
+    FMenuTab: TNecoTab;
+    FMenuWindows: TArray<TFormMain>;
+    // Janela que nasce para receber uma aba de outra: não abre a página inicial.
+    FNoInitialTab: Boolean;
     // atualização automática: quem baixa é o app; aqui só o aviso
     FUpdateDot: TCircle;      // bolinha na seta quando há versão pronta
     // medidor de memória: o exe mais todos os processos do motor (que o Windows mostra
@@ -164,6 +173,20 @@ type
     procedure SwitchTab(ADelta: Integer);
     procedure SelectTab(AIndex: Integer);
     procedure CloseTab(ATab: TNecoTab);
+    /// Tira a aba desta janela sem fechar a página (ela vai para outra janela).
+    procedure DetachTab(ATab: TNecoTab);
+    /// Recebe a aba de outra janela, na posição AIndex (-1 = no fim), e a ativa.
+    procedure AdoptTab(ATab: TNecoTab; AIndex: Integer);
+    /// Leva a aba para ATarget (nil = uma janela nova). A página continua viva. Se esta
+    /// janela ficar sem abas, fecha (os downloads em andamento vão junto). Devolve a janela
+    /// que recebeu a aba (nil = não moveu).
+    function MoveTabTo(ATab: TNecoTab; ATarget: TFormMain; AIndex: Integer = -1): TFormMain;
+    /// Janela nova, sem abas, um pouco para o lado desta (para receber uma aba).
+    function NewEmptyWindow: TFormMain;
+    /// As outras janelas do navegador (que não estão fechando).
+    function OtherWindows: TArray<TFormMain>;
+    function WindowAlive(AWindow: TFormMain): Boolean;
+    procedure OpenTabMenu(ATab: TNecoTab);
     procedure TabChanged(Sender: TObject; AChange: TNecoTabChange);
     procedure TabNewWindow(Sender: TObject; const AUrl: string);
     procedure TabDownload(Sender: TObject; const ADownload: INecoDownload);
@@ -210,7 +233,7 @@ type
     procedure ClearMenu;
     procedure AddMenuRow(ATag: Integer; const AIcon, AText, ARight: string; AIconColor: TAlphaColor;
       AMarked: Boolean);
-    procedure OpenMenu;
+    procedure OpenMenu(ATarget: TControl = nil);
     procedure HideMenu;
     // atualização automática (o app baixa; a janela avisa)
     procedure ShowUpdateNotice;
@@ -255,6 +278,7 @@ type
     procedure AppClose;
     procedure AppOpenUrl(const AUrl: string);
     procedure SelfTestTick(Sender: TObject);
+    procedure MoveTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
     /// A ação do atalho (nil = não é atalho). Executar adiado: ver HandleShortcut.
@@ -276,6 +300,25 @@ uses
   Neco.UI.DefaultBrowser;
 
 {$R *.fmx}
+
+const
+  CMenuWidth = 280;
+  CMenuRowHeight = 36;
+  // Tag de cada linha do menu.
+  CMenuBlocker = 0;
+  CMenuBookmarks = 1;
+  CMenuHistory = 2;
+  CMenuDownloads = 3;
+  CMenuOpenFile = 4;
+  CMenuTheme = 5;
+  CMenuUpdate = 6;
+  CMenuLater = 7;
+  CMenuNewWindow = 8;
+  CMenuQuit = 9;
+  // menu de contexto da aba
+  CMenuTabNewWindow = 10;
+  CMenuTabClose = 11;
+  CMenuTabToWindow = 100; // + índice em FMenuWindows
 
 { TFormMain }
 
@@ -319,7 +362,7 @@ begin
   // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
   AttachFrame;
   NecoFrameMakeIndependent(Self);
-  if not RestoreTabs then
+  if not RestoreTabs and not FNoInitialTab then
     NewTab(StartUrl);
   RestoreOtherWindows;
   // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos|config abre o painel.
@@ -343,6 +386,43 @@ begin
     FSelfTest := TTimer.Create(Self);
     FSelfTest.Interval := 15000; // abertura assentada antes da primeira medida
     FSelfTest.OnTimer := SelfTestTick;
+  end;
+  // Teste de mover aba sem mouse: NECO_TESTE_MOVER=1 leva a última aba para uma janela nova
+  // e depois de volta (ver MoveTestTick).
+  if FFirstWindow and (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_MOVER') = '1') then
+  begin
+    FMoveTest := TTimer.Create(Self);
+    FMoveTest.Interval := 8000;
+    FMoveTest.OnTimer := MoveTestTick;
+  end;
+end;
+
+procedure TFormMain.MoveTestTick(Sender: TObject);
+var
+  T: TNecoTab;
+begin
+  if FShuttingDown then
+    Exit;
+  Inc(FMoveTestStep);
+  if FMoveTestStep = 1 then
+  begin
+    if FTabs.Count < 2 then
+      NewTab(FSettings.HomeUrl, False);
+    // A janela nova recebe a última aba.
+    FMoveTestWindow := MoveTabTo(FTabs.Last, nil);
+    NecoTrace(Format('teste mover: ida, janelas=%d', [NecoApp.WindowCount]));
+  end
+  else
+  begin
+    FMoveTest.Enabled := False;
+    // A aba volta para cá; a janela nova fica sem abas e fecha.
+    if (FMoveTestWindow <> nil) and WindowAlive(FMoveTestWindow) and (FMoveTestWindow.FTabs.Count > 0) then
+    begin
+      T := FMoveTestWindow.FTabs[0];
+      FMoveTestWindow.MoveTabTo(T, Self);
+    end;
+    FMoveTestWindow := nil;
+    NecoTrace('teste mover: volta');
   end;
 end;
 
@@ -516,6 +596,8 @@ begin
   FStage.Stop;
   if FSelfTest <> nil then
     FSelfTest.Enabled := False;
+  if FMoveTest <> nil then
+    FMoveTest.Enabled := False;
   FProgressTimer.Enabled := False;
   HideSuggestions;
   FPanelDownloads.Shutdown;
@@ -975,6 +1057,14 @@ begin
       begin
         if not FShuttingDown then
           CloseTab(T);
+      end)
+  else if Button = TMouseButton.mbRight then
+    // Menu da aba: mover para outra janela, fechar.
+    TThread.ForceQueue(nil,
+      procedure
+      begin
+        if not FShuttingDown and (FTabs.IndexOf(T) >= 0) then
+          OpenTabMenu(T);
       end);
 end;
 
@@ -1377,6 +1467,177 @@ begin
   else if WasActive and not FAddress.IsFocused then
     // A página fechada tinha o teclado: ele passa para a aba que assumiu.
     FActive.Engine.Focus;
+end;
+
+procedure TFormMain.DetachTab(ATab: TNecoTab);
+var
+  I: Integer;
+  B: TRectangle;
+begin
+  I := FTabs.IndexOf(ATab);
+  if I < 0 then
+    Exit;
+  // Vídeo em tela cheia: sai dela aqui; a página também (senão continua "cheia" lá dentro).
+  if FFullVideo and (ATab = FActive) then
+  begin
+    ATab.Engine.ExecuteScript('if (document.fullscreenElement) document.exitFullscreen();');
+    FFullVideo := False;
+    ApplyFullScreen;
+  end;
+  if FDragTab = ATab then
+  begin
+    FDragTab := nil;
+    FDragging := False;
+  end;
+  if FMenuTab = ATab then
+    FMenuTab := nil;
+  FTabs.Delete(I);
+  // Os eventos voltam a ser religados pela janela que recebe a aba.
+  ATab.OnChanged := nil;
+  ATab.OnNewWindow := nil;
+  ATab.OnDownload := nil;
+  ATab.OnKey := nil;
+  ATab.OnPageFocus := nil;
+  ATab.OnNavigated := nil;
+  ATab.OnFullScreen := nil;
+  ATab.Engine.SetVisible(False);
+  // O botão é desta janela (quem chama já está fora dos eventos dele: ForceQueue).
+  B := ATab.Button;
+  ATab.Button := nil;
+  ATab.Icon := nil;
+  ATab.TitleLabel := nil;
+  ATab.CloseButton := nil;
+  B.Free;
+  LayoutTabStrip;
+  if FActive = ATab then
+  begin
+    FActive := nil;
+    if FTabs.Count > 0 then
+      ActivateTab(FTabs[Min(I, FTabs.Count - 1)]);
+  end;
+end;
+
+procedure TFormMain.AdoptTab(ATab: TNecoTab; AIndex: Integer);
+begin
+  // A página (com o vídeo, o histórico de Voltar e o que estiver baixando) vem viva.
+  NecoEngineMoveToForm(ATab.Engine, Self);
+  ATab.OnChanged := TabChanged;
+  ATab.OnNewWindow := TabNewWindow;
+  ATab.OnDownload := TabDownload;
+  ATab.OnKey := TabKey;
+  ATab.OnPageFocus := TabPageFocus;
+  ATab.OnNavigated := TabNavigated;
+  ATab.OnFullScreen := TabFullScreen;
+  if (AIndex >= 0) and (AIndex < FTabs.Count) then
+    FTabs.Insert(AIndex, ATab)
+  else
+    FTabs.Add(ATab);
+  BuildTabButton(ATab);
+  LayoutTabStrip;
+  ActivateTab(ATab);
+end;
+
+function TFormMain.WindowAlive(AWindow: TFormMain): Boolean;
+var
+  I: Integer;
+begin
+  // Janela liberada sai da lista do Screen (ReleaseForm) antes de morrer.
+  for I := 0 to Screen.FormCount - 1 do
+    if Screen.Forms[I] = AWindow then
+      Exit(not AWindow.FShuttingDown);
+  Result := False;
+end;
+
+function TFormMain.OtherWindows: TArray<TFormMain>;
+var
+  I: Integer;
+begin
+  Result := nil;
+  for I := 0 to Screen.FormCount - 1 do
+    if (Screen.Forms[I] <> Self) and (Screen.Forms[I] is TFormMain) and
+      not TFormMain(Screen.Forms[I]).FShuttingDown and TFormMain(Screen.Forms[I]).FStarted then
+      Result := Result + [TFormMain(Screen.Forms[I])];
+end;
+
+function TFormMain.NewEmptyWindow: TFormMain;
+var
+  R: TRect;
+  IsMax: Boolean;
+begin
+  Result := TFormMain.Create(Application);
+  Result.FNoInitialTab := True;
+  // Do tamanho desta restaurada (não maximizada), um pouco para o lado.
+  if NecoFrameGetPlacement(Self, R, IsMax) then
+  begin
+    R.Offset(40, 40);
+    NecoFrameSetPlacement(Result, R);
+  end
+  else
+    Result.SetBounds(Left + 40, Top + 40, Width, Height);
+  Result.Show;
+end;
+
+function TFormMain.MoveTabTo(ATab: TNecoTab; ATarget: TFormMain; AIndex: Integer): TFormMain;
+var
+  D: INecoDownload;
+begin
+  Result := nil;
+  if FShuttingDown or NecoApp.ShuttingDown or (FTabs.IndexOf(ATab) < 0) or (ATarget = Self) then
+    Exit;
+  if ATarget = nil then
+  begin
+    // A única aba já é uma janela sozinha.
+    if FTabs.Count = 1 then
+      Exit;
+    ATarget := NewEmptyWindow;
+  end;
+  NecoTrace(Format('aba muda de janela (%d abas ficam)', [FTabs.Count - 1]));
+  DetachTab(ATab);
+  ATarget.AdoptTab(ATab, AIndex);
+  Result := ATarget;
+  if FTabs.Count = 0 then
+  begin
+    // Esta janela vai fechar: o que está baixando continua no painel da outra.
+    for D in FPanelDownloads.TakeInProgress do
+      ATarget.FPanelDownloads.Add(D);
+    TThread.ForceQueue(nil,
+      procedure
+      begin
+        Close;
+      end);
+  end;
+  NecoFrameBringToFront(ATarget);
+end;
+
+procedure TFormMain.OpenTabMenu(ATab: TNecoTab);
+var
+  I: Integer;
+  T: string;
+begin
+  HideMenu;
+  HideSuggestions;
+  FMenuTab := ATab;
+  FMenuWindows := OtherWindows;
+  FMenuBox.BeginUpdate;
+  try
+    ClearMenu;
+    if FTabs.Count > 1 then
+      AddMenuRow(CMenuTabNewWindow, ICO_JANELA_RESTAURAR, 'Mover para nova janela', '',
+        Palette.Text, False);
+    for I := 0 to High(FMenuWindows) do
+    begin
+      if FMenuWindows[I].FActive <> nil then
+        T := FMenuWindows[I].FActive.DisplayTitle
+      else
+        T := 'outra janela';
+      AddMenuRow(CMenuTabToWindow + I, ICO_SETA, 'Mover para: ' + T,
+        Format('%d abas', [FMenuWindows[I].FTabs.Count]), Palette.Text, False);
+    end;
+    AddMenuRow(CMenuTabClose, ICO_FECHAR, 'Fechar aba', 'Ctrl+W', Palette.Text, False);
+  finally
+    FMenuBox.EndUpdate;
+  end;
+  OpenMenu(ATab.Button);
 end;
 
 procedure TFormMain.TabChanged(Sender: TObject; AChange: TNecoTabChange);
@@ -2510,20 +2771,6 @@ end;
 
 { Menu da seta }
 
-const
-  CMenuWidth = 280;
-  CMenuRowHeight = 36;
-  // Tag de cada linha do menu.
-  CMenuBlocker = 0;
-  CMenuBookmarks = 1;
-  CMenuHistory = 2;
-  CMenuDownloads = 3;
-  CMenuOpenFile = 4;
-  CMenuTheme = 5;
-  CMenuUpdate = 6;
-  CMenuLater = 7;
-  CMenuNewWindow = 8;
-  CMenuQuit = 9;
 
 procedure TFormMain.BuildMenu;
 begin
@@ -2614,8 +2861,19 @@ begin
   FMenuY := FMenuY + CMenuRowHeight;
 end;
 
-procedure TFormMain.OpenMenu;
+procedure TFormMain.OpenMenu(ATarget: TControl);
 begin
+  // Sem alvo: o menu da seta, alinhado à direita dela. Com alvo (uma aba): embaixo dele.
+  if ATarget = nil then
+  begin
+    FMenu.PlacementTarget := FBtnMenu;
+    FMenu.HorizontalOffset := CButtonSize - CMenuWidth;
+  end
+  else
+  begin
+    FMenu.PlacementTarget := ATarget;
+    FMenu.HorizontalOffset := 0;
+  end;
   FMenuBox.Fill.Color := Palette.Toolbar;
   FMenuBox.Stroke.Color := Palette.FieldBorder;
   FMenu.Width := CMenuWidth;
@@ -2718,6 +2976,17 @@ begin
           NewWindow;
         CMenuQuit:
           NecoApp.CloseAllWindows;
+        CMenuTabNewWindow:
+          if FTabs.IndexOf(FMenuTab) >= 0 then
+            MoveTabTo(FMenuTab, nil);
+        CMenuTabClose:
+          if FTabs.IndexOf(FMenuTab) >= 0 then
+            CloseTab(FMenuTab);
+      else
+        // A janela pode ter fechado com o menu aberto.
+        if (Acao >= CMenuTabToWindow) and (Acao - CMenuTabToWindow < Length(FMenuWindows)) and
+          (FTabs.IndexOf(FMenuTab) >= 0) and WindowAlive(FMenuWindows[Acao - CMenuTabToWindow]) then
+          MoveTabTo(FMenuTab, FMenuWindows[Acao - CMenuTabToWindow]);
         // CMenuLater: só fecha o aviso; a troca fica para quando fechar o navegador
       end;
     end);

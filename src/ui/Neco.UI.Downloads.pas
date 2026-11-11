@@ -57,6 +57,9 @@ type
     function ActiveCount: Integer;
     /// O app está fechando: nenhuma linha escuta mais nada.
     procedure Shutdown;
+    /// A janela vai fechar com downloads em andamento (a última aba mudou de janela): eles
+    /// saem daqui, prontos para entrar no painel da outra (Add). As linhas daqui param de ouvir.
+    function TakeInProgress: TArray<INecoDownload>;
     procedure Restyle; override;
     /// Um download terminou (ASuccess = concluído; False = falhou ou cancelado).
     property OnFinished: TNecoDownloadFinishedEvent read FOnFinished write FOnFinished;
@@ -327,6 +330,24 @@ begin
   FOnFinished := nil;
   for I := 0 to RowCount - 1 do
     TNecoDownloadRow(Row(I)).Unhook;
+end;
+
+function TNecoDownloadsPanel.TakeInProgress: TArray<INecoDownload>;
+var
+  I: Integer;
+  R: TNecoDownloadRow;
+begin
+  Result := nil;
+  for I := 0 to RowCount - 1 do
+  begin
+    R := TNecoDownloadRow(Row(I));
+    if (R.State = ndsInProgress) and (R.FDownload <> nil) then
+    begin
+      Result := Result + [R.FDownload];
+      // Antes da linha nova: o download tem um ouvinte só (OnChanged).
+      R.Unhook;
+    end;
+  end;
 end;
 
 procedure TNecoDownloadsPanel.Restyle;

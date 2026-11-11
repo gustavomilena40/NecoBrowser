@@ -138,6 +138,7 @@ type
   TNecoWV2Engine = class(TNecoEngineBase, INecoEngine)
   private
     FParentWnd: HWND;
+    FRequestedParent: HWND; // a janela em que o controller foi pedido
     FSink: TNecoWV2Sink;
     FSinkRef: IInterface;
     FController: ICoreWebView2Controller;
@@ -1283,6 +1284,7 @@ begin
   if FClosed or (GEnv = nil) then
     Exit;
   NecoTrace('controller pedido');
+  FRequestedParent := FParentWnd;
   HR := GEnv.CreateCoreWebView2Controller(FParentWnd, FSink);
   if Failed(HR) then
     FailLater('Falha ao criar a página (' + HrText(HR) + ').');
@@ -1310,6 +1312,13 @@ begin
   end;
   NecoTrace('controller pronto');
   FController := AController;
+  // A aba mudou de janela enquanto o controller nascia: ele veio na janela antiga.
+  if (FRequestedParent <> 0) and (FRequestedParent <> FParentWnd) then
+  begin
+    NecoTrace(Format('controller nasceu na janela antiga: %x -> %x',
+      [NativeUInt(FRequestedParent), NativeUInt(FParentWnd)]));
+    FController.Set_ParentWindow(wireHWND(FParentWnd));
+  end;
   if Failed(FController.Get_CoreWebView2(FWebView)) or (FWebView = nil) then
   begin
     Fail('O WebView2 não devolveu a página.');
@@ -1584,7 +1593,8 @@ begin
   FParentWnd := W;
   // A subclasse avisa o motor quando a janela nova se mexe (WM_MOVE).
   HookParent(W);
-  // Controller ainda não criado: ele nasce direto na janela nova (StartController usa FParentWnd).
+  // Controller ainda não criado: ele nasce direto na janela nova (StartController usa
+  // FParentWnd), ou é mudado ao nascer se já tinha sido pedido na antiga.
   if FController = nil then
     Exit;
   // O import da RTL declara wireHWND (ponteiro), mas a função nativa recebe o HWND por
