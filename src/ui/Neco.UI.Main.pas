@@ -77,6 +77,13 @@ type
     FMenuWindows: TArray<TFormMain>;
     // Janela que nasce para receber uma aba de outra: não abre a página inicial.
     FNoInitialTab: Boolean;
+    // arrastar aba entre janelas
+    FTearPending: Boolean;    // a aba vai sair para uma janela nova (ForceQueue)
+    FTabDrag: Boolean;        // esta janela está sendo arrastada por uma aba
+    FTearOrigin: TFormMain;   // de onde a aba saiu (Esc devolve)
+    FTearIndex: Integer;
+    FDropTarget: TFormMain;   // janela com a faixa sob o cursor
+    FDropMarker: TRectangle;  // onde a aba arrastada vai entrar (nesta janela)
     // atualização automática: quem baixa é o app; aqui só o aviso
     FUpdateDot: TCircle;      // bolinha na seta quando há versão pronta
     // medidor de memória: o exe mais todos os processos do motor (que o Windows mostra
@@ -187,6 +194,17 @@ type
     function OtherWindows: TArray<TFormMain>;
     function WindowAlive(AWindow: TFormMain): Boolean;
     procedure OpenTabMenu(ATab: TNecoTab);
+    /// A aba saiu da faixa arrastada: vira uma janela nova que segue o mouse.
+    procedure TearOffTab(ATab: TNecoTab);
+    /// Uma aba só: arrastar a aba arrasta a janela (e pode soltar na faixa de outra).
+    procedure StartWindowDragByTab;
+    /// Passo do arrasto desta janela pelo Windows (AEnd = soltou).
+    procedure TabDragMoved(AEnd: Boolean);
+    /// A outra janela cuja faixa está sob o cursor (a da frente), e em que posição a aba entra.
+    function DropTargetAtCursor(out AIndex: Integer): TFormMain;
+    function DropIndexAt(X: Single): Integer;
+    procedure ShowDropMarker(AIndex: Integer);
+    procedure HideDropMarker;
     procedure TabChanged(Sender: TObject; AChange: TNecoTabChange);
     procedure TabNewWindow(Sender: TObject; const AUrl: string);
     procedure TabDownload(Sender: TObject; const ADownload: INecoDownload);
@@ -319,6 +337,8 @@ const
   CMenuTabNewWindow = 10;
   CMenuTabClose = 11;
   CMenuTabToWindow = 100; // + índice em FMenuWindows
+  // Quanto o mouse precisa sair da faixa, na vertical, para a aba virar janela (px lógicos).
+  CTearOffDistance = 30;
 
 { TFormMain }
 
@@ -767,6 +787,12 @@ begin
             NecoFrameToggleMaximize(Self);
         end);
     end);
+  // Arrasto da janela por uma aba: soltar na faixa de outra janela junta as duas.
+  NecoFrameSetMoveHandler(Self,
+    procedure(AEnd: Boolean)
+    begin
+      TabDragMoved(AEnd);
+    end);
   UpdateMaxButton;
 end;
 
@@ -1076,20 +1102,36 @@ end;
 procedure TFormMain.TabButtonMouseMove(Sender: TObject; Shift: TShiftState; X, Y: Single);
 var
   B: TRectangle;
+  Pt: TPointF;
   P, NewX, MaxX: Single;
   Cur, Idx: Integer;
+  Fora: Boolean;
 begin
-  if (FDragTab = nil) or (Sender <> FDragTab.Button) or not (ssLeft in Shift) then
+  if (FDragTab = nil) or (Sender <> FDragTab.Button) or not (ssLeft in Shift) or FTearPending then
     Exit;
   B := FDragTab.Button;
-  P := StripX(Sender, X, Y);
+  Pt := FTabStrip.AbsoluteToLocal(TControl(Sender).LocalToAbsolute(TPointF.Create(X, Y)));
+  P := Pt.X;
+  // Longe da faixa na vertical: a aba sai da janela.
+  Fora := (Pt.Y < -CTearOffDistance) or (Pt.Y > FTabStrip.Height + CTearOffDistance);
   if not FDragging then
   begin
-    if Abs(P - FDragStartX) < 6 then
+    if (Abs(P - FDragStartX) < 6) and not Fora then
       Exit; // clique comum, não arrasto
     FDragging := True;
     B.BringToFront;
     FStage.BringToFront;
+    // Uma aba só: a aba é a janela.
+    if FTabs.Count = 1 then
+    begin
+      StartWindowDragByTab;
+      Exit;
+    end;
+  end;
+  if Fora then
+  begin
+    TearOffTab(FDragTab);
+    Exit;
   end;
   // Segue o mouse, presa entre a primeira e a última vaga.
   MaxX := 8 + (FTabs.Count - 1) * FTabW;
@@ -1607,6 +1649,156 @@ begin
       end);
   end;
   NecoFrameBringToFront(ATarget);
+end;
+
+procedure TFormMain.StartWindowDragByTab;
+begin
+  FDragTab := nil;
+  FDragging := False;
+  LayoutTabStrip;
+  FTabDrag := True;
+  FTearOrigin := nil;
+  // O Windows move a janela a partir do ponto atual do mouse até soltar.
+  NecoFrameStartSystemDrag(Self, -1, -1);
+end;
+
+procedure TFormMain.TearOffTab(ATab: TNecoTab);
+var
+  GrabX: Single;
+begin
+  if FTearPending then
+    Exit;
+  FTearPending := True;
+  GrabX := FDragGrabX;
+  FDragTab := nil;
+  FDragging := False;
+  // Estamos dentro do evento do botão da aba, que a mudança de janela libera (regra 5.3).
+  TThread.ForceQueue(nil,
+    procedure
+    var
+      W: TFormMain;
+      Idx: Integer;
+      Sc: Single;
+    begin
+      FTearPending := False;
+      if FShuttingDown or (FTabs.IndexOf(ATab) < 0) then
+        Exit;
+      // Já soltou o botão: não há arrasto para continuar.
+      if not NecoKeyIsDown(vkLButton) then
+      begin
+        LayoutTabStrip;
+        Exit;
+      end;
+      Idx := FTabs.IndexOf(ATab);
+      W := MoveTabTo(ATab, nil);
+      if W = nil then
+      begin
+        LayoutTabStrip;
+        Exit;
+      end;
+      W.FTabDrag := True;
+      W.FTearOrigin := Self;
+      W.FTearIndex := Idx;
+      // A aba da janela nova (a primeira, em x = 8) fica embaixo do cursor, no mesmo ponto
+      // em que foi pega.
+      Sc := W.Handle.Scale;
+      if Sc <= 0 then
+        Sc := 1;
+      NecoFrameStartSystemDrag(W, Round((8 + GrabX) * Sc), Round(CTabStripHeight / 2 * Sc));
+    end);
+end;
+
+function TFormMain.DropIndexAt(X: Single): Integer;
+begin
+  if FTabW <= 0 then
+    Exit(FTabs.Count);
+  Result := EnsureRange(Round((X - 8) / FTabW), 0, FTabs.Count);
+end;
+
+function TFormMain.DropTargetAtCursor(out AIndex: Integer): TFormMain;
+var
+  W: TFormMain;
+  P: TPointF;
+begin
+  Result := nil;
+  AIndex := -1;
+  for W in OtherWindows do
+    if NecoFrameCursorInForm(W, P) and (P.Y < CTabStripHeight) and
+      ((Result = nil) or NecoFrameIsAbove(W, Result)) then
+    begin
+      Result := W;
+      AIndex := W.DropIndexAt(P.X);
+    end;
+end;
+
+procedure TFormMain.ShowDropMarker(AIndex: Integer);
+begin
+  if FDropMarker = nil then
+  begin
+    FDropMarker := TRectangle.Create(Self);
+    FDropMarker.Parent := FTabStrip;
+    FDropMarker.HitTest := False;
+    FDropMarker.Stroke.Kind := TBrushKind.None;
+    FDropMarker.XRadius := 1.5;
+    FDropMarker.YRadius := 1.5;
+  end;
+  FDropMarker.Fill.Color := Palette.Accent;
+  FDropMarker.SetBounds(8 + AIndex * FTabW - 2, FTabStrip.Height - CTabHeight + 4, 3, CTabHeight - 8);
+  FDropMarker.Visible := True;
+  FDropMarker.BringToFront;
+end;
+
+procedure TFormMain.HideDropMarker;
+begin
+  if FDropMarker <> nil then
+    FDropMarker.Visible := False;
+end;
+
+procedure TFormMain.TabDragMoved(AEnd: Boolean);
+var
+  Target, Origin: TFormMain;
+  Idx, OIdx: Integer;
+  Cancel: Boolean;
+begin
+  if not FTabDrag or FShuttingDown then
+    Exit;
+  Target := DropTargetAtCursor(Idx);
+  if not AEnd then
+  begin
+    if (FDropTarget <> nil) and (FDropTarget <> Target) and WindowAlive(FDropTarget) then
+      FDropTarget.HideDropMarker;
+    FDropTarget := Target;
+    if Target <> nil then
+      Target.ShowDropMarker(Idx);
+    // Por cima da faixa da outra: dá para ver onde a aba vai entrar.
+    NecoFrameSetTranslucent(Self, Target <> nil);
+    Exit;
+  end;
+  // Soltou (ou Esc).
+  FTabDrag := False;
+  if (FDropTarget <> nil) and WindowAlive(FDropTarget) then
+    FDropTarget.HideDropMarker;
+  FDropTarget := nil;
+  NecoFrameSetTranslucent(Self, False);
+  Cancel := NecoKeyIsDown(vkEscape);
+  Origin := FTearOrigin;
+  OIdx := FTearIndex;
+  FTearOrigin := nil;
+  // Fora do laço de mover do Windows.
+  TThread.ForceQueue(nil,
+    procedure
+    begin
+      if FShuttingDown or (FTabs.Count <> 1) then
+        Exit;
+      if Cancel then
+      begin
+        // Esc: a aba volta para onde estava.
+        if (Origin <> nil) and WindowAlive(Origin) then
+          MoveTabTo(FTabs[0], Origin, OIdx);
+      end
+      else if (Target <> nil) and WindowAlive(Target) then
+        MoveTabTo(FTabs[0], Target, Idx);
+    end);
 end;
 
 procedure TFormMain.OpenTabMenu(ATab: TNecoTab);

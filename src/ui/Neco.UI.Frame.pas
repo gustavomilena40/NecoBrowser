@@ -25,6 +25,8 @@ uses
 
 type
   TNecoFrameHit = (fhClient, fhCaption, fhMaxButton);
+  /// A janela está sendo arrastada pelo Windows (laço de mover). AEnd: soltou (ou Esc).
+  TNecoFrameMoveEvent = reference to procedure(AEnd: Boolean);
   /// APoint em coordenadas lógicas do FMX, relativas à área cliente.
   TNecoFrameHitTest = reference to function(const APoint: TPointF): TNecoFrameHit;
 
@@ -47,6 +49,18 @@ procedure NecoFrameBringToFront(AForm: TCommonCustomForm);
 function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+/// Avisa a cada passo do arrasto da janela (WM_MOVING) e no fim (WM_EXITSIZEMOVE).
+/// nil desliga. Chamado de dentro do laço de mover do Windows.
+procedure NecoFrameSetMoveHandler(AForm: TCommonCustomForm; const AOnMove: TNecoFrameMoveEvent);
+/// Onde está o cursor, em coordenadas lógicas do FMX relativas à área cliente do form.
+/// False = fora da área cliente (ou janela minimizada).
+function NecoFrameCursorInForm(AForm: TCommonCustomForm; out APoint: TPointF): Boolean;
+/// Janela semitransparente (durante o arrasto de uma aba sobre outra janela).
+procedure NecoFrameSetTranslucent(AForm: TCommonCustomForm; AOn: Boolean);
+/// A tecla está apertada agora (fora da fila de mensagens).
+function NecoKeyIsDown(AVirtualKey: Word): Boolean;
+/// A é mais alta que B na ordem das janelas (está na frente)?
+function NecoFrameIsAbove(A, B: TCommonCustomForm): Boolean;
 /// Posição da janela para gravar na sessão: o retângulo dela restaurada (não maximizada,
 /// nem em tela cheia), em pixels do Windows, e se estava maximizada.
 function NecoFrameGetPlacement(AForm: TCommonCustomForm; out ABounds: TRect; out AMaximized: Boolean): Boolean;
@@ -83,6 +97,7 @@ type
     HitTest: TNecoFrameHitTest;
     MaxHover: TProc<Boolean>;
     MaxClick: TProc;
+    OnMove: TNecoFrameMoveEvent;
     MaxHot: Boolean;
     Tracking: Boolean;
     Full: Boolean;
@@ -235,6 +250,12 @@ begin
           S.MaxClick();
         Exit(0);
       end;
+    WM_MOVING:
+      if Assigned(S.OnMove) then
+        S.OnMove(False);
+    WM_EXITSIZEMOVE:
+      if Assigned(S.OnMove) then
+        S.OnMove(True);
     WM_NCDESTROY:
       begin
         RemoveWindowSubclass(hWnd, @FrameProc, uIdSubclass);
@@ -309,7 +330,81 @@ begin
   S.HitTest := nil;
   S.MaxHover := nil;
   S.MaxClick := nil;
+  S.OnMove := nil;
   S.Form := nil;
+end;
+
+procedure NecoFrameSetMoveHandler(AForm: TCommonCustomForm; const AOnMove: TNecoFrameMoveEvent);
+var
+  S: PFrameState;
+begin
+  S := FindState(FormToHWND(AForm));
+  if S <> nil then
+    S.OnMove := AOnMove;
+end;
+
+function NecoFrameCursorInForm(AForm: TCommonCustomForm; out APoint: TPointF): Boolean;
+var
+  W: HWND;
+  P: TPoint;
+  CR: TRect;
+  Sc: Single;
+begin
+  APoint := TPointF.Zero;
+  W := FormToHWND(AForm);
+  if (W = 0) or IsIconic(W) or not IsWindowVisible(W) or not GetCursorPos(P) then
+    Exit(False);
+  Winapi.Windows.ScreenToClient(W, P);
+  GetClientRect(W, CR);
+  Sc := AForm.Handle.Scale;
+  if Sc <= 0 then
+    Sc := 1;
+  APoint := TPointF.Create(P.X / Sc, P.Y / Sc);
+  Result := CR.Contains(P);
+end;
+
+procedure NecoFrameSetTranslucent(AForm: TCommonCustomForm; AOn: Boolean);
+var
+  W: HWND;
+  Ex: NativeInt;
+begin
+  W := FormToHWND(AForm);
+  if W = 0 then
+    Exit;
+  Ex := GetWindowLongPtr(W, GWL_EXSTYLE);
+  if AOn then
+  begin
+    if Ex and WS_EX_LAYERED = 0 then
+      SetWindowLongPtr(W, GWL_EXSTYLE, Ex or WS_EX_LAYERED);
+    SetLayeredWindowAttributes(W, 0, 150, LWA_ALPHA);
+  end
+  else if Ex and WS_EX_LAYERED <> 0 then
+  begin
+    SetWindowLongPtr(W, GWL_EXSTYLE, Ex and not NativeInt(WS_EX_LAYERED));
+    RedrawWindow(W, nil, 0, RDW_ERASE or RDW_INVALIDATE or RDW_FRAME or RDW_ALLCHILDREN);
+  end;
+end;
+
+function NecoKeyIsDown(AVirtualKey: Word): Boolean;
+begin
+  Result := GetAsyncKeyState(AVirtualKey) < 0;
+end;
+
+function NecoFrameIsAbove(A, B: TCommonCustomForm): Boolean;
+var
+  WA, WB, W: HWND;
+begin
+  WA := FormToHWND(A);
+  WB := FormToHWND(B);
+  // Desce a partir de A: se achar B, A está na frente.
+  W := GetWindow(WA, GW_HWNDNEXT);
+  while W <> 0 do
+  begin
+    if W = WB then
+      Exit(True);
+    W := GetWindow(W, GW_HWNDNEXT);
+  end;
+  Result := False;
 end;
 
 procedure NecoFrameMinimize(AForm: TCommonCustomForm);
@@ -462,6 +557,9 @@ begin
   // Monitor que não existe mais: deixa o sistema escolher.
   if (W = 0) or R.IsEmpty or (MonitorFromRect(@R, MONITOR_DEFAULTTONULL) = 0) then
     Exit;
+  // Sem isto, o FMX põe no lugar padrão do Windows a janela que ele acha que está na
+  // posição de projeto (0,0 do .fmx) ao exibir: a janela gravada no canto não voltava lá.
+  AForm.Position := TFormPosition.Designed;
   if IsZoomed(W) or IsIconic(W) then
     ShowWindow(W, SW_RESTORE);
   // Sem SWP_SHOWWINDOW: oculta continua oculta.
@@ -555,6 +653,30 @@ end;
 
 procedure NecoFrameDetach(AForm: TCommonCustomForm);
 begin
+end;
+
+procedure NecoFrameSetMoveHandler(AForm: TCommonCustomForm; const AOnMove: TNecoFrameMoveEvent);
+begin
+end;
+
+function NecoFrameCursorInForm(AForm: TCommonCustomForm; out APoint: TPointF): Boolean;
+begin
+  APoint := TPointF.Zero;
+  Result := False;
+end;
+
+procedure NecoFrameSetTranslucent(AForm: TCommonCustomForm; AOn: Boolean);
+begin
+end;
+
+function NecoKeyIsDown(AVirtualKey: Word): Boolean;
+begin
+  Result := False;
+end;
+
+function NecoFrameIsAbove(A, B: TCommonCustomForm): Boolean;
+begin
+  Result := False;
 end;
 
 procedure NecoFrameMinimize(AForm: TCommonCustomForm);
