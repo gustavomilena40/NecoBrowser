@@ -45,6 +45,12 @@ function NecoFrameIsForeground(AForm: TCommonCustomForm): Boolean;
 function NecoSystemIdleMs: Cardinal;
 /// Tela cheia: a janela cobre o monitor inteiro, sem bordas. Desligar volta ao que era.
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+/// Posição da janela para gravar na sessão: o retângulo dela restaurada (não maximizada,
+/// nem em tela cheia), em pixels do Windows, e se estava maximizada.
+function NecoFrameGetPlacement(AForm: TCommonCustomForm; out ABounds: TRect; out AMaximized: Boolean): Boolean;
+/// Põe a janela restaurada nesse retângulo (o de NecoFrameGetPlacement). Ignora retângulo
+/// vazio ou fora de todos os monitores. Não mostra a janela se ela está oculta.
+procedure NecoFrameSetPlacement(AForm: TCommonCustomForm; const ABounds: TRect);
 /// Janela com botão próprio na barra de tarefas e no Alt+Tab (várias janelas no processo).
 procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
 /// Com o botão do mouse ainda apertado: põe o ponto (AGrabX, AGrabY) da janela, em pixels
@@ -387,6 +393,69 @@ begin
   end;
 end;
 
+/// O "normal" do placement é relativo à área de trabalho do monitor (sem a barra de
+/// tarefas); o resto da sessão usa coordenadas de tela.
+function WorkToScreen(const R: TRect): TRect;
+var
+  MI: TMonitorInfo;
+  Rr: TRect;
+begin
+  Result := R;
+  Rr := R;
+  MI.cbSize := SizeOf(MI);
+  if GetMonitorInfo(MonitorFromRect(@Rr, MONITOR_DEFAULTTONEAREST), @MI) then
+    Result.Offset(MI.rcWork.Left - MI.rcMonitor.Left, MI.rcWork.Top - MI.rcMonitor.Top);
+end;
+
+function NecoFrameGetPlacement(AForm: TCommonCustomForm; out ABounds: TRect; out AMaximized: Boolean): Boolean;
+var
+  W: HWND;
+  S: PFrameState;
+  WP: TWindowPlacement;
+begin
+  ABounds := TRect.Empty;
+  AMaximized := False;
+  W := FormToHWND(AForm);
+  if W = 0 then
+    Exit(False);
+  S := FindState(W);
+  if (S <> nil) and S.Full then
+  begin
+    // Em tela cheia o retângulo é o do monitor: vale o de antes dela (já restaurada).
+    ABounds := S.SavedRect;
+    AMaximized := S.SavedMax;
+    Exit(not ABounds.IsEmpty);
+  end;
+  WP.length := SizeOf(WP);
+  if not GetWindowPlacement(W, WP) then
+    Exit(False);
+  // Minimizada: vale como ela volta.
+  AMaximized := IsZoomed(W) or (IsIconic(W) and (WP.flags and WPF_RESTORETOMAXIMIZED <> 0));
+  if not IsZoomed(W) and not IsIconic(W) then
+    // Na tela: o retângulo de verdade. O "normal" do placement pode estar velho (fica o
+    // de quando a janela foi criada, visto em 2026-11-11).
+    GetWindowRect(W, ABounds)
+  else
+    ABounds := WorkToScreen(WP.rcNormalPosition);
+  Result := not ABounds.IsEmpty;
+end;
+
+procedure NecoFrameSetPlacement(AForm: TCommonCustomForm; const ABounds: TRect);
+var
+  W: HWND;
+  R: TRect;
+begin
+  W := FormToHWND(AForm);
+  R := ABounds;
+  // Monitor que não existe mais: deixa o sistema escolher.
+  if (W = 0) or R.IsEmpty or (MonitorFromRect(@R, MONITOR_DEFAULTTONULL) = 0) then
+    Exit;
+  if IsZoomed(W) or IsIconic(W) then
+    ShowWindow(W, SW_RESTORE);
+  // Sem SWP_SHOWWINDOW: oculta continua oculta.
+  SetWindowPos(W, 0, R.Left, R.Top, R.Width, R.Height, SWP_NOZORDER or SWP_NOACTIVATE or SWP_NOOWNERZORDER);
+end;
+
 procedure NecoFrameMakeIndependent(AForm: TCommonCustomForm);
 var
   W, App: HWND;
@@ -531,6 +600,17 @@ begin
 end;
 
 procedure NecoFrameSetFullScreen(AForm: TCommonCustomForm; AOn: Boolean);
+begin
+end;
+
+function NecoFrameGetPlacement(AForm: TCommonCustomForm; out ABounds: TRect; out AMaximized: Boolean): Boolean;
+begin
+  ABounds := TRect.Empty;
+  AMaximized := False;
+  Result := False;
+end;
+
+procedure NecoFrameSetPlacement(AForm: TCommonCustomForm; const ABounds: TRect);
 begin
 end;
 

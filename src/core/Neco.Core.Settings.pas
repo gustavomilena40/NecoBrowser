@@ -7,10 +7,20 @@
 interface
 
 uses
-  Neco.Core.Url;
+  System.Types, Neco.Core.Url;
 
 type
   TNecoTheme = (ntDark, ntLight);
+
+  /// Uma janela da sessão gravada.
+  TNecoSessionWindow = record
+    Urls: TArray<string>; // na ordem da faixa
+    Active: Integer;
+    /// Posição e tamanho da janela restaurada (não maximizada), em pixels da tela.
+    /// Vazio = não se sabe (o sistema escolhe).
+    Bounds: TRect;
+    Maximized: Boolean;
+  end;
 
   TNecoSettings = class
   private
@@ -65,9 +75,14 @@ type
     property AutoUpdate: Boolean read FAutoUpdate write FAutoUpdate;
     /// Onde a atualização baixada espera a troca (fora da pasta que roaming sincroniza).
     function UpdateDir: string;
-    /// Grava as abas abertas (URLs na ordem da faixa) e qual estava ativa.
+    /// Grava as janelas abertas (formato 2). Janela sem aba fica de fora.
+    procedure SaveSessionWindows(const AWindows: TArray<TNecoSessionWindow>);
+    /// Lê a sessão gravada, no formato 2 ou no 1 (uma janela só, sem posição).
+    /// False = não há (ou o arquivo é inválido).
+    function LoadSessionWindows(out AWindows: TArray<TNecoSessionWindow>): Boolean;
+    /// Uma janela só: as abas abertas (URLs na ordem da faixa) e qual estava ativa.
     procedure SaveSession(const AUrls: TArray<string>; AActive: Integer);
-    /// Lê a sessão gravada. False = não há (ou o arquivo é inválido).
+    /// As abas da primeira janela da sessão gravada.
     function LoadSession(out AUrls: TArray<string>; out AActive: Integer): Boolean;
     property HomeUrl: string read FHomeUrl write FHomeUrl;
   end;
@@ -75,7 +90,7 @@ type
 implementation
 
 uses
-  System.SysUtils, System.JSON, System.IOUtils, Neco.Core.Files;
+  System.SysUtils, System.JSON, System.IOUtils, System.Generics.Collections, Neco.Core.Files;
 
 const
   CAppFolder = 'NecoBrowser';
@@ -144,50 +159,140 @@ begin
   Result := TPath.Combine(FDataDir, 'session.json');
 end;
 
-procedure TNecoSettings.SaveSession(const AUrls: TArray<string>; AActive: Integer);
+/// "tabs" e "active" de um objeto (a raiz no formato 1, cada janela no 2).
+procedure AddTabs(AObj: TJSONObject; const AUrls: TArray<string>; AActive: Integer);
 var
-  O: TJSONObject;
   A: TJSONArray;
   U: string;
 begin
+  A := TJSONArray.Create;
+  AObj.AddPair('tabs', A);
+  for U in AUrls do
+    A.Add(U);
+  AObj.AddPair('active', TJSONNumber.Create(AActive));
+end;
+
+function ReadTabs(AObj: TJSONObject; out AWin: TNecoSessionWindow): Boolean;
+var
+  A: TJSONArray;
+  V: TJSONValue;
+begin
+  AWin := Default(TNecoSessionWindow);
+  if AObj.TryGetValue<TJSONArray>('tabs', A) then
+    for V in A do
+      if (V is TJSONString) and (V.Value <> '') then
+        AWin.Urls := AWin.Urls + [V.Value];
+  if not AObj.TryGetValue<Integer>('active', AWin.Active) or (AWin.Active < 0) or
+    (AWin.Active >= Length(AWin.Urls)) then
+    AWin.Active := 0;
+  Result := Length(AWin.Urls) > 0;
+end;
+
+procedure TNecoSettings.SaveSessionWindows(const AWindows: TArray<TNecoSessionWindow>);
+var
+  O, J: TJSONObject;
+  A, B: TJSONArray;
+  W: TNecoSessionWindow;
+  First: Boolean;
+begin
   O := TJSONObject.Create;
   try
-    O.AddPair('version', TJSONNumber.Create(1));
+    O.AddPair('version', TJSONNumber.Create(2));
     A := TJSONArray.Create;
-    O.AddPair('tabs', A);
-    for U in AUrls do
-      A.Add(U);
-    O.AddPair('active', TJSONNumber.Create(AActive));
+    First := True;
+    for W in AWindows do
+    begin
+      if Length(W.Urls) = 0 then
+        Continue;
+      // A primeira janela também na raiz, como no formato 1: uma versão antiga do
+      // navegador ainda reabre as abas dela.
+      if First then
+        AddTabs(O, W.Urls, W.Active);
+      First := False;
+      J := TJSONObject.Create;
+      A.AddElement(J);
+      AddTabs(J, W.Urls, W.Active);
+      if not W.Bounds.IsEmpty then
+      begin
+        B := TJSONArray.Create;
+        J.AddPair('bounds', B);
+        B.Add(W.Bounds.Left);
+        B.Add(W.Bounds.Top);
+        B.Add(W.Bounds.Right);
+        B.Add(W.Bounds.Bottom);
+      end;
+      J.AddPair('maximized', TJSONBool.Create(W.Maximized));
+    end;
+    O.AddPair('windows', A);
     NecoSaveTextAtomic(SessionFile, O.Format(2));
   finally
     O.Free;
   end;
 end;
 
-function TNecoSettings.LoadSession(out AUrls: TArray<string>; out AActive: Integer): Boolean;
+function TNecoSettings.LoadSessionWindows(out AWindows: TArray<TNecoSessionWindow>): Boolean;
 var
   O: TJSONObject;
-  A: TJSONArray;
+  A, B: TJSONArray;
   V: TJSONValue;
+  W: TNecoSessionWindow;
+  N: array[0..3] of Integer;
+  I: Integer;
 begin
-  AUrls := nil;
-  AActive := 0;
+  AWindows := nil;
   O := NecoParseObject(NecoLoadText(SessionFile));
   if O = nil then
     Exit(False);
   try
-    if O.TryGetValue<TJSONArray>('tabs', A) then
+    if O.TryGetValue<TJSONArray>('windows', A) then
+    begin
       for V in A do
-        if (V is TJSONString) and (V.Value <> '') then
-          AUrls := AUrls + [V.Value];
-    if not O.TryGetValue<Integer>('active', AActive) then
-      AActive := 0;
-    if (AActive < 0) or (AActive >= Length(AUrls)) then
-      AActive := 0;
+        if (V is TJSONObject) and ReadTabs(TJSONObject(V), W) then
+        begin
+          if TJSONObject(V).TryGetValue<TJSONArray>('bounds', B) and (B.Count = 4) then
+          begin
+            for I := 0 to 3 do
+              if not B.Items[I].TryGetValue<Integer>(N[I]) then
+                N[I] := 0;
+            W.Bounds := TRect.Create(N[0], N[1], N[2], N[3]);
+            if W.Bounds.IsEmpty then
+              W.Bounds := TRect.Empty;
+          end;
+          if not TJSONObject(V).TryGetValue<Boolean>('maximized', W.Maximized) then
+            W.Maximized := False;
+          AWindows := AWindows + [W];
+        end;
+    end
+    else if ReadTabs(O, W) then
+      AWindows := [W]; // formato 1: uma janela, sem posição
   finally
     O.Free;
   end;
-  Result := Length(AUrls) > 0;
+  Result := Length(AWindows) > 0;
+end;
+
+procedure TNecoSettings.SaveSession(const AUrls: TArray<string>; AActive: Integer);
+var
+  W: TNecoSessionWindow;
+begin
+  W := Default(TNecoSessionWindow);
+  W.Urls := AUrls;
+  W.Active := AActive;
+  SaveSessionWindows([W]);
+end;
+
+function TNecoSettings.LoadSession(out AUrls: TArray<string>; out AActive: Integer): Boolean;
+var
+  Ws: TArray<TNecoSessionWindow>;
+begin
+  AUrls := nil;
+  AActive := 0;
+  Result := LoadSessionWindows(Ws);
+  if Result then
+  begin
+    AUrls := Ws[0].Urls;
+    AActive := Ws[0].Active;
+  end;
 end;
 
 function TNecoSettings.ToJson: string;

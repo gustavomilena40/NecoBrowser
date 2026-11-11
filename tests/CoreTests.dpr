@@ -7,6 +7,7 @@
 
 uses
   System.SysUtils,
+  System.Types,
   System.StrUtils,
   System.IOUtils,
   Neco.Core.Url in '..\src\core\Neco.Core.Url.pas',
@@ -256,6 +257,7 @@ procedure TestarSettings(const APasta: string);
 var
   SU: TArray<string>;
   SA: Integer;
+  SW, LW: TArray<TNecoSessionWindow>;
   S, S2: TNecoSettings;
 begin
   Writeln('Configuracoes');
@@ -278,6 +280,33 @@ begin
       'sessao: ida e volta');
     S.SaveSession(['https://a.com/'], 7);
     Check(S2.LoadSession(SU, SA) and (SA = 0), 'sessao: ativa fora da faixa vira 0');
+    // formato 2: várias janelas, com posição
+    SetLength(SW, 3);
+    SW[0].Urls := ['https://a.com/', 'https://b.com/'];
+    SW[0].Active := 1;
+    SW[0].Bounds := TRect.Create(-1500, 20, -300, 900);
+    SW[0].Maximized := False;
+    SW[1].Urls := nil; // janela sem aba fica de fora
+    SW[2].Urls := ['https://c.com/'];
+    SW[2].Active := 0;
+    SW[2].Bounds := TRect.Empty;
+    SW[2].Maximized := True;
+    S.SaveSessionWindows(SW);
+    Check(S2.LoadSessionWindows(LW) and (Length(LW) = 2) and (Length(LW[0].Urls) = 2) and
+      (LW[0].Active = 1) and (LW[0].Bounds = TRect.Create(-1500, 20, -300, 900)) and
+      not LW[0].Maximized and (LW[1].Urls[0] = 'https://c.com/') and LW[1].Bounds.IsEmpty and
+      LW[1].Maximized, 'sessao v2: ida e volta (2 janelas, posicao, maximizada)');
+    Check(S2.LoadSession(SU, SA) and (Length(SU) = 2) and (SA = 1),
+      'sessao v2: abas da primeira janela pelo formato antigo');
+    NecoSaveTextAtomic(S.SessionFile, '{"version":1,"tabs":["https://x.com/","https://y.com/"],"active":1}');
+    Check(S2.LoadSessionWindows(LW) and (Length(LW) = 1) and (Length(LW[0].Urls) = 2) and
+      (LW[0].Active = 1) and LW[0].Bounds.IsEmpty, 'sessao v1 antiga lida como uma janela');
+    NecoSaveTextAtomic(S.SessionFile, '{"version":2,"windows":[{"tabs":"x"},5,{"tabs":[""]}');
+    Check(not S2.LoadSessionWindows(LW), 'sessao quebrada: nada a restaurar');
+    NecoSaveTextAtomic(S.SessionFile, '{"version":2,"windows":[{"tabs":[1,"https://z.com/"],' +
+      '"bounds":[1,2,"x"],"maximized":"sim"},7]}');
+    Check(S2.LoadSessionWindows(LW) and (Length(LW) = 1) and (LW[0].Urls[0] = 'https://z.com/') and
+      LW[0].Bounds.IsEmpty and not LW[0].Maximized, 'sessao com campos errados: aproveita o que der');
     S.SearchEngine := seDuckDuckGo;
     S.Theme := ntLight;
     S.BlockerEnabled := False;

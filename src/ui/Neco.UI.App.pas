@@ -32,6 +32,10 @@ type
     procedure AppMemoryReport(const AReport: TNecoMemoryReport);
     /// Minimizada: com todas assim, o medidor não mede.
     function AppIsMinimized: Boolean;
+    /// Abas, aba ativa e posição desta janela, para gravar a sessão. False = nada a gravar.
+    function AppSessionWindow(out AWin: TNecoSessionWindow): Boolean;
+    /// O app vai fechar todas as janelas (Sair, reiniciar para atualizar): feche esta.
+    procedure AppClose;
   end;
 
   TNecoApp = class
@@ -42,6 +46,7 @@ type
     FHistory: TNecoHistory;
     FClosed: TList<string>;
     FWindows: TList<INecoWindow>;
+    FCurrent: INecoWindow; // a última janela ativada (é nela que a Neco anima)
     FSessionOwner: Boolean;
     FShuttingDown: Boolean;
     // atualização automática (só no processo dono da sessão; nos outros FUpdater = nil)
@@ -71,6 +76,7 @@ type
     procedure AdInstalled(const AFolder: string);
     procedure MemoryTick(Sender: TObject);
     procedure NotifySettings(AChange: TNecoSettingsChange);
+    procedure SaveSession;
     procedure EndShutdown;
   public
     /// Carrega os dados, pega a trava de instância e prepara o motor (antes da 1ª janela).
@@ -80,9 +86,16 @@ type
     // janelas
     procedure RegisterWindow(const AWindow: INecoWindow);
     function IsLastWindow(const AWindow: INecoWindow): Boolean;
-    /// A última janela começou a fechar: para timers e downloads do app antes de ela fechar
-    /// os motores das abas.
+    function WindowCount: Integer;
+    /// A janela ficou ativa (é a "atual" até outra janela do navegador ser ativada).
+    procedure WindowActivated(const AWindow: INecoWindow);
+    /// É a janela atual (ou a única)? As outras não animam a Neco.
+    function IsCurrentWindow(const AWindow: INecoWindow): Boolean;
+    /// A última janela começou a fechar (ou o app vai fechar todas): grava a sessão com as
+    /// janelas abertas e para timers e downloads do app antes de os motores das abas fecharem.
     procedure BeginShutdown;
+    /// Sair: fecha todas as janelas; a sessão guarda todas elas.
+    procedure CloseAllWindows;
     /// Tira a janela da lista (os motores dela já fechados). Se era a última, encerra o app.
     procedure UnregisterWindow(const AWindow: INecoWindow);
 
@@ -251,10 +264,61 @@ begin
   Result := (FWindows.Count = 1) and (FWindows[0] = AWindow);
 end;
 
+function TNecoApp.WindowCount: Integer;
+begin
+  Result := FWindows.Count;
+end;
+
+procedure TNecoApp.WindowActivated(const AWindow: INecoWindow);
+begin
+  if FWindows.Contains(AWindow) then
+    FCurrent := AWindow;
+end;
+
+function TNecoApp.IsCurrentWindow(const AWindow: INecoWindow): Boolean;
+begin
+  Result := (FWindows.Count <= 1) or (FCurrent = AWindow);
+end;
+
+procedure TNecoApp.SaveSession;
+var
+  Ws: TArray<TNecoSessionWindow>;
+  W: TNecoSessionWindow;
+  Win: INecoWindow;
+begin
+  // Só o processo dono da sessão grava; sem janela (falha ao abrir) não apaga a gravada.
+  if not FSessionOwner or (FWindows.Count = 0) then
+    Exit;
+  Ws := nil;
+  for Win in FWindows do
+    if Win.AppSessionWindow(W) then
+      Ws := Ws + [W];
+  try
+    FSettings.SaveSessionWindows(Ws);
+    NecoTrace(Format('sessao gravada: %d janelas', [Length(Ws)]));
+  except
+    // Falha de disco ao fechar não pode impedir o app de fechar.
+  end;
+end;
+
+procedure TNecoApp.CloseAllWindows;
+var
+  Ws: TArray<INecoWindow>;
+  W: INecoWindow;
+begin
+  BeginShutdown;
+  // Cópia: cada janela sai da lista ao fechar.
+  Ws := FWindows.ToArray;
+  for W in Ws do
+    W.AppClose;
+end;
+
 procedure TNecoApp.BeginShutdown;
 begin
   if FShuttingDown then
     Exit;
+  // Antes de tudo: as janelas ainda têm as abas.
+  SaveSession;
   FShuttingDown := True;
   FMemTimer.Enabled := False;
   if FUpdateTimer <> nil then
@@ -270,6 +334,8 @@ end;
 procedure TNecoApp.UnregisterWindow(const AWindow: INecoWindow);
 begin
   FWindows.Remove(AWindow);
+  if FCurrent = AWindow then
+    FCurrent := nil;
   if (FWindows.Count = 0) and FShuttingDown then
     EndShutdown;
 end;

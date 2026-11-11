@@ -31,8 +31,13 @@ type
     FActive: TNecoTab;
     FStarted: Boolean;
     FShuttingDown: Boolean;
-    // Aberta com Ctrl+N: começa na página inicial e não mexe na sessão gravada.
-    FExtraWindow: Boolean;
+    // A primeira janela do processo: só ela lê a linha de comando e restaura a sessão.
+    FFirstWindow: Boolean;
+    // Janela da sessão gravada que esta vai reabrir (abas e aba ativa), ao aparecer.
+    FRestore: TNecoSessionWindow;
+    FHasRestore: Boolean;
+    // As outras janelas da sessão (só na primeira): abertas depois dela.
+    FRestoreOthers: TArray<TNecoSessionWindow>;
     // teste de memória (NECO_TESTE_ABAS): abre e fecha abas sozinho, em ciclos
     FSelfTest: TTimer;
     FSelfTestTabs, FSelfTestCycles, FSelfTestCycle, FSelfTestStep: Integer;
@@ -129,12 +134,17 @@ type
     procedure FormResized(Sender: TObject);
     function StartUrl: string;
     function CmdLineUrl: string;
-    /// Reabre as abas da última vez (as de fundo só carregam quando ativadas).
-    function RestoreSession: Boolean;
-    procedure SaveSession;
+    /// Primeira janela: lê a sessão gravada, põe esta no lugar dela e guarda as outras.
+    procedure LoadSession;
+    /// Reabre as abas de FRestore (as de fundo só carregam quando ativadas).
+    function RestoreTabs: Boolean;
+    /// Abre as outras janelas da sessão gravada.
+    procedure RestoreOtherWindows;
     procedure ReopenClosedTab;
-    /// Abre outra janela do navegador, neste mesmo processo, na página inicial.
-    procedure NewWindow;
+    /// Abre outra janela do navegador, neste mesmo processo. ARestore: a janela da sessão
+    /// que ela reabre; sem ele, abre na página inicial.
+    procedure NewWindow; overload;
+    procedure NewWindow(const ARestore: TNecoSessionWindow; AHasRestore: Boolean); overload;
     procedure TabFullScreen(Sender: TObject; AValue: Boolean);
     procedure ApplyFullScreen;
     procedure HistoryClick(Sender: TObject);
@@ -241,6 +251,8 @@ type
     procedure AppUpdateChanged(ANew: Boolean);
     procedure AppMemoryReport(const AReport: TNecoMemoryReport);
     function AppIsMinimized: Boolean;
+    function AppSessionWindow(out AWin: TNecoSessionWindow): Boolean;
+    procedure AppClose;
     procedure SelfTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
@@ -269,6 +281,7 @@ uses
 procedure TFormMain.FormCreate(Sender: TObject);
 begin
   NecoTrace('form criando');
+  FFirstWindow := NecoApp.WindowCount = 0;
   FTabs := TObjectList<TNecoTab>.Create(False);
   // Dados, tema, motor e trava de instância já foram preparados pelo app.
   FSettings := NecoApp.Settings;
@@ -281,7 +294,12 @@ begin
   // A janela já existe aqui (o FMX cria o handle antes do OnCreate): a barra branca
   // some antes da primeira exibição.
   AttachFrame;
+  // Botão próprio na barra de tarefas (ainda oculta: não pisca).
+  NecoFrameMakeIndependent(Self);
   NecoApp.RegisterWindow(Self);
+  // Antes de aparecer: a janela já nasce no lugar da última vez.
+  if FFirstWindow then
+    LoadSession;
   RefreshUpdateInfo;
   // Volta da tela "Aplicativos padrão" do Windows: a chave mostra o estado novo.
   OnActivate := FormActivated;
@@ -299,8 +317,10 @@ begin
   NecoTrace('form visivel');
   // O FMX pode recriar a janela ao exibir o form: religa a barra própria na janela final.
   AttachFrame;
-  if not RestoreSession then
+  NecoFrameMakeIndependent(Self);
+  if not RestoreTabs then
     NewTab(StartUrl);
+  RestoreOtherWindows;
   // Teste visual sem mexer no mouse: NECO_PAINEL=downloads|favoritos|config abre o painel.
   P := System.SysUtils.GetEnvironmentVariable('NECO_PAINEL');
   if SameText(P, 'downloads') then
@@ -312,8 +332,8 @@ begin
   if SameText(P, 'historico') then
     ShowPanel(FPanelHistory);
   // Teste de várias janelas sem teclado: NECO_TESTE_JANELA=1 abre a segunda (como o Ctrl+N).
-  if not FExtraWindow and (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_JANELA') = '1') then
-    TThread.ForceQueue(nil, NewWindow);
+  if FFirstWindow and (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_JANELA') = '1') then
+    TThread.ForceQueue(nil, procedure begin NewWindow; end);
   // Teste de memória: NECO_TESTE_ABAS=<n> [NECO_TESTE_CICLOS=<c>] (ver SelfTestTick).
   FSelfTestTabs := StrToIntDef(System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS'), 0);
   if FSelfTestTabs > 0 then
@@ -345,48 +365,90 @@ end;
 
 function TFormMain.StartUrl: string;
 begin
-  Result := CmdLineUrl;
+  // A linha de comando é só da primeira janela (a do Ctrl+N abre a página inicial).
+  Result := '';
+  if FFirstWindow then
+    Result := CmdLineUrl;
   if Result = '' then
     Result := FSettings.HomeUrl;
 end;
 
-function TFormMain.RestoreSession: Boolean;
+procedure TFormMain.LoadSession;
 var
-  Urls: TArray<string>;
-  Active, I: Integer;
+  Ws: TArray<TNecoSessionWindow>;
 begin
-  Result := False;
-  // Endereço na linha de comando e o teste de memória abrem só o que pediram.
-  if FExtraWindow or not NecoApp.SessionOwner or not FSettings.RestoreSession or (CmdLineUrl <> '') or
+  // Outro processo com o mesmo perfil (o primeiro guarda a sessão), endereço na linha de
+  // comando e o teste de memória abrem só o que pediram.
+  if not NecoApp.SessionOwner or not FSettings.RestoreSession or (CmdLineUrl <> '') or
     (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS') <> '') then
     Exit;
-  if not FSettings.LoadSession(Urls, Active) or (Length(Urls) = 0) then
+  if not FSettings.LoadSessionWindows(Ws) then
     Exit;
-  for I := 0 to High(Urls) do
-    NewTab(Urls[I], False, -1, True);
-  ActivateTab(FTabs[Min(Active, FTabs.Count - 1)]);
-  NecoTrace(Format('sessao restaurada: %d abas', [Length(Urls)]));
-  Result := True;
+  FRestore := Ws[0];
+  FHasRestore := True;
+  FRestoreOthers := Copy(Ws, 1, MaxInt);
+  NecoFrameSetPlacement(Self, FRestore.Bounds);
+  if FRestore.Maximized then
+    WindowState := TWindowState.wsMaximized;
 end;
 
-procedure TFormMain.SaveSession;
+function TFormMain.RestoreTabs: Boolean;
 var
-  Urls: TArray<string>;
+  I: Integer;
+begin
+  Result := FHasRestore and (Length(FRestore.Urls) > 0);
+  if not Result then
+    Exit;
+  for I := 0 to High(FRestore.Urls) do
+    NewTab(FRestore.Urls[I], False, -1, True);
+  ActivateTab(FTabs[Min(FRestore.Active, FTabs.Count - 1)]);
+  NecoTrace(Format('sessao restaurada: %d abas', [Length(FRestore.Urls)]));
+  FRestore := Default(TNecoSessionWindow);
+  FHasRestore := False;
+end;
+
+procedure TFormMain.RestoreOtherWindows;
+var
+  Ws: TArray<TNecoSessionWindow>;
+  I: Integer;
+begin
+  Ws := FRestoreOthers;
+  FRestoreOthers := nil;
+  if Length(Ws) = 0 then
+    Exit;
+  for I := 0 to High(Ws) do
+    NewWindow(Ws[I], True);
+  // A primeira volta para a frente, como estava ao fechar (era a principal).
+  Activate;
+end;
+
+function TFormMain.AppSessionWindow(out AWin: TNecoSessionWindow): Boolean;
+var
   T: TNecoTab;
 begin
-  // Segunda janela (ex.: "Abrir com" um PDF com o navegador já aberto) não apaga a
-  // sessão da primeira. A janela do Ctrl+N também não (a sessão de várias janelas é da etapa 4).
-  if FExtraWindow or not NecoApp.SessionOwner then
-    Exit;
-  Urls := nil;
+  AWin := Default(TNecoSessionWindow);
   for T in FTabs do
     if (T.Url <> '') and not SameText(T.Url, 'about:blank') then
-      Urls := Urls + [T.Url];
-  try
-    FSettings.SaveSession(Urls, Max(0, FTabs.IndexOf(FActive)));
-  except
-    // Falha de disco ao fechar não pode impedir o app de fechar.
-  end;
+    begin
+      if T = FActive then
+        AWin.Active := Length(AWin.Urls);
+      AWin.Urls := AWin.Urls + [T.Url];
+    end;
+  NecoFrameGetPlacement(Self, AWin.Bounds, AWin.Maximized);
+  Result := Length(AWin.Urls) > 0;
+end;
+
+procedure TFormMain.AppClose;
+begin
+  // A principal por último: fechar ela encerra o app, e as outras já têm de ter saído.
+  if Application.MainForm = Self then
+    TThread.ForceQueue(nil,
+      procedure
+      begin
+        Close;
+      end)
+  else
+    Close;
 end;
 
 procedure TFormMain.ReopenClosedTab;
@@ -399,15 +461,29 @@ begin
 end;
 
 procedure TFormMain.NewWindow;
+begin
+  NewWindow(Default(TNecoSessionWindow), False);
+end;
+
+procedure TFormMain.NewWindow(const ARestore: TNecoSessionWindow; AHasRestore: Boolean);
 var
   F: TFormMain;
 begin
   if FShuttingDown or NecoApp.ShuttingDown then
     Exit;
   F := TFormMain.Create(Application);
-  F.FExtraWindow := True;
-  // Um pouco para o lado, para não cobrir esta inteira.
-  F.SetBounds(Left + 40, Top + 40, Width, Height);
+  if AHasRestore and not ARestore.Bounds.IsEmpty then
+    NecoFrameSetPlacement(F, ARestore.Bounds)
+  else
+    // Um pouco para o lado, para não cobrir esta inteira.
+    F.SetBounds(Left + 40, Top + 40, Width, Height);
+  if AHasRestore then
+  begin
+    F.FRestore := ARestore;
+    F.FHasRestore := True;
+    if ARestore.Maximized then
+      F.WindowState := TWindowState.wsMaximized;
+  end;
   F.Show;
 end;
 
@@ -419,7 +495,8 @@ begin
   if FShuttingDown then
     Exit;
   FShuttingDown := True;
-  // Última janela: o app para os timers e downloads dele antes de os motores fecharem.
+  // Última janela: o app grava a sessão e para os timers e downloads dele antes de os
+  // motores fecharem. Fechar uma janela com outras abertas tira ela da sessão (como no Chrome).
   if NecoApp.IsLastWindow(Self) then
     NecoApp.BeginShutdown
   else
@@ -447,7 +524,7 @@ begin
   FPanelDownloads.Shutdown;
   if FFull then
     NecoFrameSetFullScreen(Self, False);
-  SaveSession;
+  // A sessão já foi gravada pelo app (BeginShutdown), com todas as janelas abertas.
   // Os motores desta janela fecham com ela ainda viva.
   for T in FTabs do
     T.Close;
@@ -582,7 +659,9 @@ begin
   FStage.CanAnimate :=
     function: Boolean
     begin
-      Result := not FShuttingDown and not NecoFrameIsMinimized(Self);
+      // Com várias janelas, só a atual anima; nas outras a Neco fica parada.
+      Result := not FShuttingDown and not NecoFrameIsMinimized(Self) and
+        NecoApp.IsCurrentWindow(Self);
     end;
   FStage.CanSchedule :=
     function: Boolean
@@ -2446,6 +2525,8 @@ const
   CMenuTheme = 5;
   CMenuUpdate = 6;
   CMenuLater = 7;
+  CMenuNewWindow = 8;
+  CMenuQuit = 9;
 
 procedure TFormMain.BuildMenu;
 begin
@@ -2572,6 +2653,7 @@ begin
     else
       AddMenuRow(CMenuBlocker, ICO_ESCUDO_OFF, 'Bloqueador desligado', 'clique para ligar',
         Palette.TextMuted, False);
+    AddMenuRow(CMenuNewWindow, ICO_JANELA_RESTAURAR, 'Nova janela', 'Ctrl+N', Palette.Text, False);
     AddMenuRow(CMenuBookmarks, ICO_MARCADOR, 'Favoritos', 'Ctrl+Shift+O', Palette.Text,
       FPanelBookmarks.Visible);
     AddMenuRow(CMenuHistory, ICO_HISTORICO, 'Histórico', 'Ctrl+H', Palette.Text,
@@ -2583,6 +2665,7 @@ begin
       AddMenuRow(CMenuTheme, ICO_SOL, 'Tema claro', '', Palette.Text, False)
     else
       AddMenuRow(CMenuTheme, ICO_LUA, 'Tema escuro', '', Palette.Text, False);
+    AddMenuRow(CMenuQuit, ICO_FECHAR, 'Sair', 'Ctrl+Shift+Q', Palette.Text, False);
   finally
     FMenuBox.EndUpdate;
   end;
@@ -2630,10 +2713,14 @@ begin
           ThemeClick(nil);
         CMenuUpdate:
           begin
-            // A última janela a fechar grava a sessão, troca o exe e abre o novo.
+            // Fecha todas; a última a fechar troca o exe e abre o novo.
             NecoApp.RequestRestartForUpdate;
-            Close;
+            NecoApp.CloseAllWindows;
           end;
+        CMenuNewWindow:
+          NewWindow;
+        CMenuQuit:
+          NecoApp.CloseAllWindows;
         // CMenuLater: só fecha o aviso; a troca fica para quando fechar o navegador
       end;
     end);
@@ -2673,8 +2760,10 @@ end;
 
 procedure TFormMain.FormActivated(Sender: TObject);
 begin
-  if not FShuttingDown then
-    RefreshDefaultBrowser;
+  if FShuttingDown then
+    Exit;
+  NecoApp.WindowActivated(Self);
+  RefreshDefaultBrowser;
 end;
 
 procedure TFormMain.RefreshDefaultBrowser;
@@ -2715,7 +2804,9 @@ begin
   else if (M = [ssCtrl, ssShift]) and (AKey = vkT) then
     Acao := ReopenClosedTab
   else if (M = [ssCtrl]) and (AKey = vkN) then
-    Acao := NewWindow
+    Acao := procedure begin NewWindow; end
+  else if (M = [ssCtrl, ssShift]) and (AKey = vkQ) then
+    Acao := NecoApp.CloseAllWindows
   else if (M = [ssCtrl]) and (AKey = vkO) then
     Acao := procedure begin OpenFileClick(nil); end
   else if (M = [ssCtrl]) and (AKey = vkH) then
