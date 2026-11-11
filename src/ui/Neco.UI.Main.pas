@@ -12,16 +12,17 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Objects, FMX.Layouts, FMX.StdCtrls,
   FMX.Edit, FMX.Dialogs,
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
-  Neco.Core.Updater, Neco.Core.AdExtension, Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
+  Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
   Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
-  Neco.UI.BookmarkBar, Neco.UI.History;
+  Neco.UI.BookmarkBar, Neco.UI.History, Neco.UI.App;
 
 type
-  TFormMain = class(TForm)
+  TFormMain = class(TForm, INecoWindow)
     procedure FormCreate(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure FormClose(Sender: TObject; var Action: TCloseAction);
   private
+    // Emprestados do app (Neco.UI.App): a janela usa, quem cria, grava e libera é o NecoApp.
     FSettings: TNecoSettings;
     FBlocklist: TNecoBlocklist;
     FBookmarks: TNecoBookmarks;
@@ -60,21 +61,11 @@ type
     FMenu: TPopup;
     FMenuBox: TRectangle;
     FMenuY: Single; // onde entra a próxima linha do menu
-    // atualização automática (só na janela dona da sessão; nas outras FUpdater = nil)
-    FUpdater: TNecoUpdater;
-    FUpdateTimer: TTimer;
-    FUpdateVersion: string;   // versão baixada esperando a troca ('' = nenhuma)
+    // atualização automática: quem baixa é o app; aqui só o aviso
     FUpdateDot: TCircle;      // bolinha na seta quando há versão pronta
-    FRestartForUpdate: Boolean;
-    // extensão de bloqueio (uBlock Origin Lite): baixada só pela janela dona da sessão
-    FAdExt: TNecoAdExtension;
-    FAdTimer: TTimer;
-    FAdFolder: string;        // versão baixada a usar ('' = ainda não baixada)
     // medidor de memória: o exe mais todos os processos do motor (que o Windows mostra
-    // num grupo separado, "Gerenciador WebView2")
+    // num grupo separado, "Gerenciador WebView2"). Quem mede é o app.
     FBtnMemory: TNecoIconButton;
-    FMemTimer: TTimer;
-    FMemAskedAt: Cardinal; // 0 = nenhuma medição em curso
     // sugestões da barra (buscas digitadas e páginas do histórico). O TPopup é uma janela
     // própria: fica por cima da página nativa e não tira o foco da barra.
     FSuggest: TPopup;
@@ -84,8 +75,6 @@ type
     FSuggestIndex: Integer;   // -1 = nenhuma escolhida (vale o que foi digitado)
     FSuggestTyped: string;    // o que a pessoa digitou (volta ao sair da lista com as setas)
     FSuggestFilling: Boolean; // a barra está sendo preenchida pela lista, não pela pessoa
-    // Primeira janela com este perfil: só ela grava e restaura as abas da sessão.
-    FSessionOwner: Boolean;
     FBtnStar: TNecoIconButton;
     FBookmarkBar: TNecoBookmarkBar;
     FProgressTrack: TLayout;
@@ -99,8 +88,6 @@ type
     FPanelBookmarks: TNecoBookmarksPanel;
     FPanelSettings: TNecoSettingsPanel;
     FPanelHistory: TNecoHistoryPanel;
-    // abas fechadas (Ctrl+Shift+T), a mais recente no fim
-    FClosed: TList<string>;
     // tela cheia: pedida pela página (vídeo) ou pelo F11
     FFullVideo, FFullKey, FFull: Boolean;
 
@@ -122,7 +109,6 @@ type
     procedure UpdateTabTitle(ATab: TNecoTab);
     /// Ícone do site na aba: o que o motor mandou ou, na aba ainda não carregada, o guardado.
     procedure UpdateTabIcon(ATab: TNecoTab);
-    procedure MemoryTick(Sender: TObject);
     procedure MemoryClick(Sender: TObject);
     procedure ShowMemory(const AReport: TNecoMemoryReport);
     procedure TabButtonMouseDown(Sender: TObject; Button: TMouseButton; Shift: TShiftState;
@@ -139,10 +125,6 @@ type
     procedure CloseWindowClick(Sender: TObject);
     procedure UpdateMaxButton;
     procedure FormResized(Sender: TObject);
-    procedure LoadData;
-    procedure LoadBlocklist;
-    procedure SaveData;
-    function BlockerOn: Boolean;
     function StartUrl: string;
     function CmdLineUrl: string;
     /// Reabre as abas da última vez (as de fundo só carregam quando ativadas).
@@ -216,19 +198,9 @@ type
       AMarked: Boolean);
     procedure OpenMenu;
     procedure HideMenu;
-    // atualização automática
-    procedure StartUpdater;
-    procedure UpdateTick(Sender: TObject);
-    procedure UpdateReady(const AVersion: string);
+    // atualização automática (o app baixa; a janela avisa)
     procedure ShowUpdateNotice;
     procedure RefreshUpdateInfo;
-    procedure FinishUpdate;
-    // extensão de bloqueio
-    procedure StartAdExtension;
-    procedure ApplyAdExtension;
-    procedure AdTick(Sender: TObject);
-    procedure AdDownloaded(const AFolder: string);
-    procedure AdInstalled(const AFolder: string);
     // navegador padrão do Windows
     procedure FormActivated(Sender: TObject);
     procedure RefreshDefaultBrowser;
@@ -246,19 +218,25 @@ type
     procedure UpdateStar;
     procedure StarClick(Sender: TObject);
     procedure ToggleBookmark;
-    procedure BookmarksChanged(Sender: TObject);
     procedure BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
     procedure BookmarkDelete(Sender: TObject; const AUrl: string);
     procedure BookmarkRename(Sender: TObject; const AUrl, ATitle: string);
     procedure BookmarkEditRequest(Sender: TObject; const AUrl: string);
-    procedure SetBookmarkBarShown(AShow: Boolean);
+    /// Mostra ou esconde a barra de favoritos conforme Settings (a escolha já está gravada).
+    procedure LayoutBookmarkBar;
     // tema, configurações e página de erro
     procedure ThemeClick(Sender: TObject);
     procedure SettingsClick(Sender: TObject);
     procedure SettingsChanged(Sender: TObject; AChange: TNecoSettingsChange);
-    procedure SetTheme(ATheme: TNecoTheme);
-    procedure SaveSettings;
     procedure ErrorRetry(Sender: TObject);
+    // INecoWindow: avisos do app
+    procedure AppSettingsChanged(AChange: TNecoSettingsChange);
+    procedure AppBookmarksChanged;
+    procedure AppFaviconsChanged;
+    procedure AppHistoryChanged;
+    procedure AppUpdateChanged(ANew: Boolean);
+    procedure AppMemoryReport(const AReport: TNecoMemoryReport);
+    function AppIsMinimized: Boolean;
     procedure SelfTestTick(Sender: TObject);
     /// Atalhos do teclado. Usado pelo form e pela página (via AcceleratorKey).
     function HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
@@ -276,48 +254,31 @@ var
 implementation
 
 uses
-  System.IOUtils, System.Math, System.ZLib,
+  System.IOUtils, System.Math,
   Neco.Core.Url, Neco.Core.Trace, Neco.Core.Favicons, Neco.Engine.Factory,
   Neco.UI.DefaultBrowser;
 
 {$R *.fmx}
-// Lista de bloqueio comprimida (tools\neco_embutidos.py): o exe funciona sem arquivos ao lado.
-{$R NecoData.res}
 
 { TFormMain }
 
 procedure TFormMain.FormCreate(Sender: TObject);
-var
-  Cfg: TNecoEngineConfig;
 begin
   NecoTrace('form criando');
   FTabs := TObjectList<TNecoTab>.Create(False);
-  FClosed := TList<string>.Create;
-  LoadData;
-  // Reinício depois de atualizar: a janela antiga ainda está saindo; espera ela soltar
-  // a trava para esta ser a dona e reabrir as abas.
-  if FindCmdLineSwitch('apos-atualizar', ['-'], True) then
-    FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir, 15000)
-  else
-    FSessionOwner := NecoAcquireInstanceLock(FSettings.DataDir);
-  NecoSetTheme(FSettings.Theme);
-  NecoSetShown(FSettings.NecoShown);
-
-  Cfg.WebDataDir := FSettings.WebDataDir;
-  Cfg.DownloadsDir := FSettings.DownloadsDir;
-  Cfg.Language := 'pt-BR';
-  Cfg.BackgroundColor := Palette.Window;
-  NecoEngineSetup(Cfg);
+  // Dados, tema, motor e trava de instância já foram preparados pelo app.
+  FSettings := NecoApp.Settings;
+  FBlocklist := NecoApp.Blocklist;
+  FBookmarks := NecoApp.Bookmarks;
+  FHistory := NecoApp.History;
 
   BuildUI;
   ApplyTheme;
   // A janela já existe aqui (o FMX cria o handle antes do OnCreate): a barra branca
   // some antes da primeira exibição.
   AttachFrame;
-  StartUpdater;
-  StartAdExtension;
-  // Pasta do exe mudou desde que virou navegador padrão: os links voltam a achar o exe.
-  NecoFixBrowserRegistration;
+  NecoApp.RegisterWindow(Self);
+  RefreshUpdateInfo;
   // Volta da tela "Aplicativos padrão" do Windows: a chave mostra o estado novo.
   OnActivate := FormActivated;
   RefreshDefaultBrowser;
@@ -389,7 +350,7 @@ var
 begin
   Result := False;
   // Endereço na linha de comando e o teste de memória abrem só o que pediram.
-  if not FSessionOwner or not FSettings.RestoreSession or (CmdLineUrl <> '') or
+  if not NecoApp.SessionOwner or not FSettings.RestoreSession or (CmdLineUrl <> '') or
     (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_ABAS') <> '') then
     Exit;
   if not FSettings.LoadSession(Urls, Active) or (Length(Urls) = 0) then
@@ -408,7 +369,7 @@ var
 begin
   // Segunda janela (ex.: "Abrir com" um PDF com o navegador já aberto) não apaga a
   // sessão da primeira.
-  if not FSessionOwner then
+  if not NecoApp.SessionOwner then
     Exit;
   Urls := nil;
   for T in FTabs do
@@ -425,11 +386,9 @@ procedure TFormMain.ReopenClosedTab;
 var
   U: string;
 begin
-  if FClosed.Count = 0 then
-    Exit;
-  U := FClosed.Last;
-  FClosed.Delete(FClosed.Count - 1);
-  NewTab(U);
+  U := NecoApp.TakeClosedTab;
+  if U <> '' then
+    NewTab(U);
 end;
 
 procedure TFormMain.FormClose(Sender: TObject; var Action: TCloseAction);
@@ -439,6 +398,9 @@ begin
   if FShuttingDown then
     Exit;
   FShuttingDown := True;
+  // Última janela: o app para os timers e downloads dele antes de os motores fecharem.
+  if NecoApp.IsLastWindow(Self) then
+    NecoApp.BeginShutdown;
   // A janela ainda recebe mensagens até ser destruída: solta os callbacks da barra
   // antes de liberar o que eles consultam.
   NecoFrameDetach;
@@ -446,101 +408,26 @@ begin
   if FSelfTest <> nil then
     FSelfTest.Enabled := False;
   FProgressTimer.Enabled := False;
-  FMemTimer.Enabled := False;
-  if FUpdateTimer <> nil then
-    FUpdateTimer.Enabled := False;
-  if FAdTimer <> nil then
-    FAdTimer.Enabled := False;
-  // Para o download da extensão antes de fechar o motor (a resposta não chega mais).
-  if FAdExt <> nil then
-    FAdExt.Shutdown;
   HideSuggestions;
   FPanelDownloads.Shutdown;
-  FBookmarks.OnChange := nil;
   if FFull then
     NecoFrameSetFullScreen(Self, False);
   SaveSession;
-  SaveData;
-  // Ordem: fechar cada motor (a janela do form ainda existe), depois o ambiente.
+  // Os motores desta janela fecham com ela ainda viva.
   for T in FTabs do
     T.Close;
   FActive := nil;
   for T in FTabs do
     T.Free;
   FTabs.Clear;
-  NecoEngineShutdown;
-  FreeAndNil(FAdExt);
-  // Com tudo gravado e os motores fechados: troca o exe (e reabre, se foi o pedido).
-  FinishUpdate;
+  // Última janela: o app grava os dados, fecha o ambiente do motor e aplica a atualização.
+  NecoApp.UnregisterWindow(Self);
+  FSettings := nil;
+  FBlocklist := nil;
+  FBookmarks := nil;
+  FHistory := nil;
   FreeAndNil(FTabs);
-  FreeAndNil(FClosed);
   FreeAndNil(FSuggestRows); // só a lista: as linhas são do form
-  FreeAndNil(FHistory);
-  FreeAndNil(FBookmarks);
-  FreeAndNil(FBlocklist);
-  FreeAndNil(FSettings);
-end;
-
-procedure TFormMain.LoadData;
-begin
-  // NECO_DADOS=<pasta>: perfil separado (testes sem tocar nos dados do usuário).
-  FSettings := TNecoSettings.Create(System.SysUtils.GetEnvironmentVariable('NECO_DADOS'));
-  FSettings.Load;
-  FBlocklist := TNecoBlocklist.Create;
-  LoadBlocklist;
-  FBookmarks := TNecoBookmarks.Create;
-  FBookmarks.LoadFromFile(FSettings.BookmarksFile);
-  FHistory := TNecoHistory.Create;
-  FHistory.LoadFromFile(FSettings.HistoryFile);
-end;
-
-procedure TFormMain.LoadBlocklist;
-var
-  Arq: string;
-  RS: TResourceStream;
-  Z: TZDecompressionStream;
-begin
-  // A do lado do exe ganha (dá para atualizar sem recompilar); senão, a embutida.
-  Arq := System.IOUtils.TPath.Combine(ExtractFilePath(ParamStr(0)), 'blocklist-hosts.txt');
-  try
-    if FileExists(Arq) then
-      FBlocklist.LoadFromFile(Arq)
-    else
-    begin
-      Arq := 'embutida';
-      RS := TResourceStream.Create(HInstance, 'NECO_BLOCKLIST', RT_RCDATA);
-      try
-        Z := TZDecompressionStream.Create(RS);
-        try
-          FBlocklist.LoadFromStream(Z);
-        finally
-          Z.Free;
-        end;
-      finally
-        RS.Free;
-      end;
-    end;
-  except
-    // Sem lista o navegador funciona, só não bloqueia.
-    FBlocklist.Clear;
-  end;
-  NecoTrace(Format('lista de bloqueio: %d hosts (%s)', [FBlocklist.Count, Arq]));
-end;
-
-procedure TFormMain.SaveData;
-begin
-  try
-    FSettings.Save;
-    FBookmarks.SaveToFile(FSettings.BookmarksFile);
-    FHistory.SaveToFile(FSettings.HistoryFile);
-  except
-    // Falha de disco ao fechar não pode impedir o app de fechar.
-  end;
-end;
-
-function TFormMain.BlockerOn: Boolean;
-begin
-  Result := (FSettings <> nil) and FSettings.BlockerEnabled;
 end;
 
 { Montagem da tela }
@@ -913,25 +800,6 @@ begin
     ATab.TitleLabel.Margins.Left := 12;
 end;
 
-procedure TFormMain.MemoryTick(Sender: TObject);
-begin
-  if FShuttingDown or NecoFrameIsMinimized(Self) then
-    Exit;
-  // Uma medição por vez; se a resposta se perdeu, tenta de novo depois de 10 s.
-  if (FMemAskedAt <> 0) and (TThread.GetTickCount - FMemAskedAt < 10000) then
-    Exit;
-  FMemAskedAt := TThread.GetTickCount;
-  if FMemAskedAt = 0 then
-    FMemAskedAt := 1;
-  NecoEngineQueryMemory(
-    procedure(const AReport: TNecoMemoryReport)
-    begin
-      FMemAskedAt := 0;
-      if not FShuttingDown then
-        ShowMemory(AReport);
-    end);
-end;
-
 procedure TFormMain.ShowMemory(const AReport: TNecoMemoryReport);
 var
   T: TNecoTab;
@@ -1157,9 +1025,7 @@ begin
   FBtnMemory.Hint := 'Memória do NecoBrowser (medindo...)';
   FBtnMemory.ShowHint := True;
   FToolRight.Width := FToolRight.Width + FBtnMemory.Width + 2;
-  FMemTimer := TTimer.Create(Self);
-  FMemTimer.Interval := 2000;
-  FMemTimer.OnTimer := MemoryTick;
+  // A medição é do app (AppMemoryReport): uma só para todas as janelas.
 
   // Bloqueador, favoritos, histórico, downloads, abrir arquivo e tema ficam no menu da seta.
   FBtnMenu := AddToolButton(ICO_SETA_BAIXO, 'Mais opções', MenuClick);
@@ -1277,7 +1143,8 @@ end;
 function TFormMain.NewTab(const AUrl: string; AActivate: Boolean; AIndex: Integer;
   ALazy: Boolean): TNecoTab;
 begin
-  Result := TNecoTab.Create(Self, FBlocklist, BlockerOn);
+  // A chave do bloqueador é do app: a aba pode mudar de janela.
+  Result := TNecoTab.Create(Self, FBlocklist, NecoApp.BlockerOn);
   Result.OnChanged := TabChanged;
   Result.OnNewWindow := TabNewWindow;
   Result.OnDownload := TabDownload;
@@ -1369,12 +1236,8 @@ begin
   if I < 0 then
     Exit;
   WasActive := ATab = FActive;
-  if not FShuttingDown and (ATab.Url <> '') and not SameText(ATab.Url, 'about:blank') then
-  begin
-    FClosed.Add(ATab.Url);
-    if FClosed.Count > 25 then
-      FClosed.Delete(0);
-  end;
+  if not FShuttingDown then
+    NecoApp.AddClosedTab(ATab.Url);
   if FDragTab = ATab then
   begin
     FDragTab := nil;
@@ -1500,9 +1363,9 @@ end;
 procedure TFormMain.TabNavigated(Sender: TObject; const AUrl: string);
 begin
   FHistory.Add(AUrl, TNecoTab(Sender).Title);
-  // Painel aberto: a visita nova aparece (as linhas não têm nada do motor).
-  if FPanelHistory.Visible then
-    FPanelHistory.Rebuild;
+  // Painéis abertos (em qualquer janela): a visita nova aparece. As linhas não têm nada
+  // do motor, então refazer aqui dentro do callback é seguro.
+  NecoApp.HistoryChanged;
 end;
 
 procedure TFormMain.TabFullScreen(Sender: TObject; AValue: Boolean);
@@ -2016,7 +1879,7 @@ begin
   FPanelBookmarks.OnDelete := BookmarkDelete;
   FPanelBookmarks.OnRename := BookmarkRename;
   FPanelBookmarks.Rebuild;
-  FBookmarks.OnChange := BookmarksChanged;
+  // Mudanças na lista chegam pelo app (AppBookmarksChanged), para todas as janelas.
 
   FPanelSettings := TNecoSettingsPanel.CreateFor(Self, FSettings, FBlocklist.Count);
   FPanelSettings.Parent := FBody;
@@ -2081,7 +1944,7 @@ end;
 
 function TFormMain.FaviconDir: string;
 begin
-  Result := System.IOUtils.TPath.Combine(FSettings.DataDir, 'favicons');
+  Result := NecoApp.FaviconDir;
 end;
 
 procedure TFormMain.StoreFavicon(ATab: TNecoTab);
@@ -2109,14 +1972,13 @@ begin
   except
     Exit;
   end;
-  // Ícone novo: as pílulas e o painel se refazem (fora do callback do motor).
+  // Ícone novo: as pílulas e o painel de todas as janelas se refazem (fora do callback
+  // do motor).
   TThread.ForceQueue(nil,
     procedure
     begin
-      if FShuttingDown then
-        Exit;
-      FBookmarkBar.Rebuild;
-      FPanelBookmarks.Rebuild;
+      if not FShuttingDown then
+        NecoApp.FaviconsChanged;
     end);
 end;
 
@@ -2167,11 +2029,7 @@ begin
     begin
       if FShuttingDown then
         Exit;
-      FHistory.Clear;
-      try
-        FHistory.SaveToFile(FSettings.HistoryFile);
-      except
-      end;
+      NecoApp.ClearHistory; // grava e refaz os painéis abertos
       FPanelHistory.Rebuild;
       FStage.Perform('flip');
     end);
@@ -2234,17 +2092,88 @@ begin
     FStage.Perform('turn');
 end;
 
-procedure TFormMain.BookmarksChanged(Sender: TObject);
+{ Avisos do app (INecoWindow) }
+
+procedure TFormMain.AppBookmarksChanged;
 begin
   // Quem muda a lista nunca é um clique numa linha do painel (BookmarkDelete adia).
+  // O app grava o arquivo.
+  if FShuttingDown then
+    Exit;
   FPanelBookmarks.Rebuild;
   FBookmarkBar.Rebuild;
   UpdateStar;
-  try
-    FBookmarks.SaveToFile(FSettings.BookmarksFile);
-  except
-    // Sem disco agora: o SaveData do fechamento tenta de novo.
+end;
+
+procedure TFormMain.AppFaviconsChanged;
+begin
+  if FShuttingDown then
+    Exit;
+  FBookmarkBar.Rebuild;
+  FPanelBookmarks.Rebuild;
+end;
+
+procedure TFormMain.AppHistoryChanged;
+begin
+  if not FShuttingDown and FPanelHistory.Visible then
+    FPanelHistory.Rebuild;
+end;
+
+procedure TFormMain.AppUpdateChanged(ANew: Boolean);
+begin
+  if FShuttingDown then
+    Exit;
+  RefreshUpdateInfo;
+  if ANew then
+  begin
+    UpdateShield; // bolinha na seta
+    ShowUpdateNotice;
   end;
+end;
+
+procedure TFormMain.AppMemoryReport(const AReport: TNecoMemoryReport);
+begin
+  if not FShuttingDown then
+    ShowMemory(AReport);
+end;
+
+function TFormMain.AppIsMinimized: Boolean;
+begin
+  Result := FShuttingDown or NecoFrameIsMinimized(Self);
+end;
+
+procedure TFormMain.AppSettingsChanged(AChange: TNecoSettingsChange);
+var
+  T: TNecoTab;
+begin
+  // O app já aplicou a parte dele (tema global, extensão, atualizador) e gravou.
+  if FShuttingDown then
+    Exit;
+  case AChange of
+    scTheme:
+      begin
+        ApplyTheme;
+        // Os sites que respeitam prefers-color-scheme trocam junto.
+        for T in FTabs do
+          T.Engine.SetDarkMode(FSettings.Theme = ntDark);
+      end;
+    scBlocker:
+      UpdateShield;
+    scBookmarkBar:
+      LayoutBookmarkBar;
+    scAutofill:
+      for T in FTabs do
+        T.Engine.SetAutofill(FSettings.FormAutofill, FSettings.SavePasswords);
+    scNeco:
+      begin
+        FStage.SetShown(FSettings.NecoShown);
+        // As Necos dos painéis e da página de erro param de desenhar no próximo quadro.
+        Invalidate;
+      end;
+    scAutoUpdate:
+      RefreshUpdateInfo;
+  end;
+  FPanelSettings.Refresh;
 end;
 
 procedure TFormMain.BookmarkOpen(Sender: TObject; const AUrl: string; ANewTab: Boolean);
@@ -2280,21 +2209,18 @@ begin
   FPanelBookmarks.BeginEdit(AUrl);
 end;
 
-procedure TFormMain.SetBookmarkBarShown(AShow: Boolean);
+procedure TFormMain.LayoutBookmarkBar;
 begin
-  FSettings.ShowBookmarkBar := AShow;
   // Align=Top: quem volta a ficar visível vai para o fim da pilha. Repõe a ordem.
   BeginUpdate;
   try
-    FBookmarkBar.Visible := AShow;
+    FBookmarkBar.Visible := FSettings.ShowBookmarkBar;
     FBookmarkBar.Position.Y := FToolbar.Position.Y + FToolbar.Height;
     FProgressTrack.Position.Y := FBookmarkBar.Position.Y + FBookmarkBar.Height + 1;
   finally
     EndUpdate;
   end;
   Realign;
-  FPanelSettings.Refresh;
-  SaveSettings;
 end;
 
 procedure TFormMain.BookmarkDelete(Sender: TObject; const AUrl: string);
@@ -2313,35 +2239,13 @@ end;
 
 { Tema, configurações e página de erro }
 
-procedure TFormMain.SaveSettings;
-begin
-  try
-    FSettings.Save;
-  except
-    // Sem disco agora: o SaveData do fechamento tenta de novo.
-  end;
-end;
-
-procedure TFormMain.SetTheme(ATheme: TNecoTheme);
-var
-  T: TNecoTab;
-begin
-  FSettings.Theme := ATheme;
-  NecoSetTheme(ATheme);
-  ApplyTheme;
-  // Os sites que respeitam prefers-color-scheme trocam junto.
-  for T in FTabs do
-    T.Engine.SetDarkMode(ATheme = ntDark);
-  FPanelSettings.Refresh;
-  SaveSettings;
-end;
-
 procedure TFormMain.ThemeClick(Sender: TObject);
 begin
+  // O app troca o tema de todas as janelas (AppSettingsChanged).
   if CurrentTheme = ntDark then
-    SetTheme(ntLight)
+    NecoApp.SetTheme(ntLight)
   else
-    SetTheme(ntDark);
+    NecoApp.SetTheme(ntDark);
 end;
 
 procedure TFormMain.SettingsClick(Sender: TObject);
@@ -2350,56 +2254,22 @@ begin
 end;
 
 procedure TFormMain.SettingsChanged(Sender: TObject; AChange: TNecoSettingsChange);
-var
-  T: TNecoTab;
 begin
-  // O painel já gravou a escolha em FSettings; aqui ela passa a valer.
-  case AChange of
-    scTheme:
-      begin
-        SetTheme(FSettings.Theme);
-        Exit; // SetTheme já gravou
-      end;
-    scBlocker:
-      begin
-        ApplyAdExtension;
-        UpdateShield;
-        if (FActive <> nil) and (FActive.Url <> '') then
-          FActive.Engine.Reload;
-      end;
-    scBookmarkBar:
-      begin
-        SetBookmarkBarShown(FSettings.ShowBookmarkBar);
-        Exit; // já gravou
-      end;
-    scAutofill:
-      for T in FTabs do
-        T.Engine.SetAutofill(FSettings.FormAutofill, FSettings.SavePasswords);
-    scNeco:
-      begin
-        FStage.SetShown(FSettings.NecoShown);
-        // As Necos dos painéis e da página de erro param de desenhar no próximo quadro.
-        Invalidate;
-      end;
-    scDefaultBrowser:
-      begin
-        // O Windows não deixa se pôr como padrão sozinho: registra e abre a tela onde
-        // a pessoa confirma. Nada a gravar no settings.json.
-        if not NecoRegisterBrowser then
-          NecoTrace('navegador padrao: registro recusado');
-        NecoOpenDefaultAppsSettings;
-        Exit;
-      end;
-    scAutoUpdate:
-      if FUpdateTimer <> nil then
-      begin
-        // Ligou: procura daqui a pouco, sem esperar a próxima abertura.
-        FUpdateTimer.Interval := 2000;
-        FUpdateTimer.Enabled := FSettings.AutoUpdate;
-        RefreshUpdateInfo;
-      end;
+  // O painel já gravou a escolha em FSettings (que é do app).
+  if AChange = scDefaultBrowser then
+  begin
+    // O Windows não deixa se pôr como padrão sozinho: registra e abre a tela onde
+    // a pessoa confirma. Nada a gravar no settings.json.
+    if not NecoRegisterBrowser then
+      NecoTrace('navegador padrao: registro recusado');
+    NecoOpenDefaultAppsSettings;
+    Exit;
   end;
-  SaveSettings;
+  // O app aplica, grava e avisa todas as janelas (inclusive esta).
+  NecoApp.SettingsChanged(AChange);
+  // Como as extensões de bloqueio: a página desta janela recarrega já com a nova regra.
+  if (AChange = scBlocker) and (FActive <> nil) and (FActive.Url <> '') then
+    FActive.Engine.Reload;
 end;
 
 procedure TFormMain.ErrorRetry(Sender: TObject);
@@ -2483,7 +2353,7 @@ begin
   N := 0;
   if FActive <> nil then
     N := FActive.BlockedCount;
-  if BlockerOn then
+  if NecoApp.BlockerOn then
   begin
     if N = 1 then
       S := '1 anúncio ou rastreador barrado nesta página'
@@ -2496,11 +2366,11 @@ begin
     FBtnMenu.Hint := 'Mais opções' + sLineBreak + 'Bloqueador desligado';
     N := 0;
   end;
-  FUpdateDot.Visible := FUpdateVersion <> '';
-  if FUpdateVersion <> '' then
+  FUpdateDot.Visible := NecoApp.UpdateVersion <> '';
+  if NecoApp.UpdateVersion <> '' then
   begin
     FUpdateDot.Fill.Color := Palette.Accent;
-    FBtnMenu.Hint := FBtnMenu.Hint + sLineBreak + 'Versão ' + FUpdateVersion +
+    FBtnMenu.Hint := FBtnMenu.Hint + sLineBreak + 'Versão ' + NecoApp.UpdateVersion +
       ' pronta: reinicie para atualizar';
   end;
   FShieldBadge.Visible := N > 0;
@@ -2520,15 +2390,8 @@ end;
 
 procedure TFormMain.ShieldClick(Sender: TObject);
 begin
-  FSettings.BlockerEnabled := not FSettings.BlockerEnabled;
-  try
-    FSettings.Save;
-  except
-    // Sem disco: a escolha vale até fechar o app.
-  end;
-  ApplyAdExtension;
-  UpdateShield;
-  FPanelSettings.Refresh;
+  // O app grava, liga/desliga a extensão e atualiza o escudo e o painel de todas as janelas.
+  NecoApp.SetBlocker(not FSettings.BlockerEnabled);
   // Como as extensões de bloqueio: a página recarrega já com a nova regra.
   if (FActive <> nil) and (FActive.Url <> '') then
     FActive.Engine.Reload;
@@ -2662,13 +2525,13 @@ begin
   FMenuBox.BeginUpdate;
   try
     ClearMenu;
-    if FUpdateVersion <> '' then
-      AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Reiniciar para atualizar', 'versão ' + FUpdateVersion,
-        Palette.Accent, False);
+    if NecoApp.UpdateVersion <> '' then
+      AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Reiniciar para atualizar',
+        'versão ' + NecoApp.UpdateVersion, Palette.Accent, False);
     N := 0;
     if FActive <> nil then
       N := FActive.BlockedCount;
-    if BlockerOn then
+    if NecoApp.BlockerOn then
       AddMenuRow(CMenuBlocker, ICO_ESCUDO, 'Bloqueador ligado', Format('%d barrados', [N]),
         Palette.Shield, False)
     else
@@ -2732,71 +2595,19 @@ begin
           ThemeClick(nil);
         CMenuUpdate:
           begin
-            FRestartForUpdate := True;
-            Close; // FormClose grava a sessão, troca o exe e abre o novo
+            // A última janela a fechar grava a sessão, troca o exe e abre o novo.
+            NecoApp.RequestRestartForUpdate;
+            Close;
           end;
         // CMenuLater: só fecha o aviso; a troca fica para quando fechar o navegador
       end;
     end);
 end;
 
-{ Atualização automática }
+{ Atualização automática
 
-function ShortVersion(const AVersion: string): string;
-begin
-  // 0.2.0.0 -> 0.2.0
-  Result := AVersion;
-  if (Length(Result.Split(['.'])) = 4) and Result.EndsWith('.0') then
-    SetLength(Result, Length(Result) - 2);
-end;
-
-procedure TFormMain.StartUpdater;
-var
-  P: string;
-begin
-  // Só a janela dona da sessão: duas janelas não baixam nem trocam o exe juntas.
-  if not FSessionOwner then
-    Exit;
-  FUpdater := TNecoUpdater.Create(FSettings.UpdateDir);
-  NecoCleanupOldExe(ParamStr(0));
-  // Baixada numa vez anterior e ainda não trocada (o navegador não fechou direito, ou a
-  // pasta do exe não deixou): avisa de novo.
-  P := FUpdater.PendingVersion;
-  if (P <> '') and (NecoCompareVersions(P, NecoAppVersion) > 0) then
-    FUpdateVersion := P;
-  FUpdateTimer := TTimer.Create(Self);
-  FUpdateTimer.Interval := 10000; // primeira consulta com a abertura já assentada
-  FUpdateTimer.OnTimer := UpdateTick;
-  FUpdateTimer.Enabled := FSettings.AutoUpdate;
-  RefreshUpdateInfo;
-end;
-
-procedure TFormMain.UpdateTick(Sender: TObject);
-begin
-  FUpdateTimer.Interval := 6 * 60 * 60 * 1000; // depois, de 6 em 6 horas
-  if FShuttingDown or not FSettings.AutoUpdate or FUpdater.Busy then
-    Exit;
-  FUpdater.Check(NecoAppVersion, UpdateReady);
-  RefreshUpdateInfo;
-end;
-
-procedure TFormMain.UpdateReady(const AVersion: string);
-var
-  Novo: Boolean;
-begin
-  // Thread principal, ao fim de cada consulta ('' = nada novo ou falhou).
-  if FShuttingDown then
-    Exit;
-  Novo := (AVersion <> '') and (AVersion <> FUpdateVersion);
-  if Novo then
-    FUpdateVersion := AVersion;
-  RefreshUpdateInfo;
-  if Novo then
-  begin
-    UpdateShield; // bolinha na seta
-    ShowUpdateNotice;
-  end;
-end;
+  Quem consulta, baixa e troca o exe é o app (Neco.UI.App). A janela mostra o aviso, a
+  bolinha na seta e o texto no painel de configurações. }
 
 procedure TFormMain.ShowUpdateNotice;
 begin
@@ -2808,7 +2619,7 @@ begin
   FMenuBox.BeginUpdate;
   try
     ClearMenu;
-    AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Versão ' + FUpdateVersion + ' pronta',
+    AddMenuRow(CMenuUpdate, ICO_SINCRONIZAR, 'Versão ' + NecoApp.UpdateVersion + ' pronta',
       'reiniciar agora', Palette.Accent, False);
     AddMenuRow(CMenuLater, ICO_HISTORICO, 'Depois', 'troca ao fechar', Palette.TextMuted, False);
   finally
@@ -2818,23 +2629,9 @@ begin
 end;
 
 procedure TFormMain.RefreshUpdateInfo;
-var
-  S: string;
 begin
-  if FPanelSettings = nil then
-    Exit;
-  S := 'Versão ' + ShortVersion(NecoAppVersion);
-  if FUpdater = nil then
-    S := S + ' (outra janela cuida da atualização)'
-  else if FUpdateVersion <> '' then
-    S := S + ' · ' + FUpdateVersion + ' baixada: troca ao reiniciar'
-  else if not FSettings.AutoUpdate then
-    S := S + ' · desligado'
-  else if FUpdater.Busy then
-    S := S + ' · procurando versão nova...'
-  else
-    S := S + ' · procura versão nova ao abrir';
-  FPanelSettings.SetUpdateInfo(S);
+  if FPanelSettings <> nil then
+    FPanelSettings.SetUpdateInfo(NecoApp.UpdateInfoText);
 end;
 
 { Navegador padrão }
@@ -2849,84 +2646,6 @@ procedure TFormMain.RefreshDefaultBrowser;
 begin
   if FPanelSettings <> nil then
     FPanelSettings.SetDefaultBrowser(NecoIsDefaultBrowser);
-end;
-
-procedure TFormMain.FinishUpdate;
-var
-  Exe: string;
-begin
-  if FUpdater = nil then
-    Exit;
-  Exe := ParamStr(0);
-  // Para o download em curso antes de mexer nos arquivos.
-  FUpdater.Shutdown;
-  // Pediu para reiniciar, ou deixou para depois com a atualização ligada.
-  if (FRestartForUpdate or FSettings.AutoUpdate) and (FUpdater.PendingVersion <> '') and
-    (NecoCompareVersions(FUpdater.PendingVersion, NecoAppVersion) > 0) then
-    FUpdater.Apply(Exe);
-  FreeAndNil(FUpdater);
-  // Reabre mesmo se a troca falhou: quem clicou em reiniciar espera a janela de volta.
-  if FRestartForUpdate then
-    NecoLaunch(Exe, '--apos-atualizar');
-end;
-
-{ Extensão de bloqueio
-
-  A lista de hosts não pega o YouTube (anúncio e vídeo vêm dos mesmos endereços). O
-  uBlock Origin Lite roda dentro da página e pega. Ele segue o mesmo botão do bloqueador. }
-
-procedure TFormMain.StartAdExtension;
-begin
-  // Só a janela dona da sessão baixa e troca versões: o perfil do motor é um só.
-  if FSessionOwner then
-  begin
-    FAdExt := TNecoAdExtension.Create(System.IOUtils.TPath.Combine(FSettings.WebDataDir, 'extensoes'));
-    FAdFolder := FAdExt.CurrentFolder;
-    FAdTimer := TTimer.Create(Self);
-    FAdTimer.Interval := 15000; // primeira consulta com a abertura já assentada
-    FAdTimer.OnTimer := AdTick;
-    FAdTimer.Enabled := True;
-  end;
-  ApplyAdExtension;
-end;
-
-procedure TFormMain.ApplyAdExtension;
-begin
-  if FShuttingDown then
-    Exit;
-  if FAdExt = nil then
-  begin
-    NecoEngineSetAdExtension('', False, BlockerOn, nil);
-    Exit;
-  end;
-  NecoEngineSetAdExtension(FAdFolder, True, BlockerOn, AdInstalled);
-  // Ligou o bloqueador depois da primeira consulta e a extensão ainda não veio: procura já.
-  if BlockerOn and (FAdFolder = '') and (FAdTimer.Interval > 15000) and not FAdExt.Busy then
-    FAdExt.Check(AdDownloaded);
-end;
-
-procedure TFormMain.AdTick(Sender: TObject);
-begin
-  FAdTimer.Interval := 24 * 60 * 60 * 1000; // depois, uma vez por dia
-  if FShuttingDown or not BlockerOn or FAdExt.Busy then
-    Exit;
-  FAdExt.Check(AdDownloaded);
-end;
-
-procedure TFormMain.AdDownloaded(const AFolder: string);
-begin
-  // Thread principal. '' = nada novo ou falhou.
-  if FShuttingDown or (AFolder = '') then
-    Exit;
-  FAdFolder := AFolder;
-  ApplyAdExtension;
-end;
-
-procedure TFormMain.AdInstalled(const AFolder: string);
-begin
-  // O motor está usando AFolder: as outras versões já podem sair do disco.
-  if not FShuttingDown and (FAdExt <> nil) then
-    FAdExt.Cleanup(AFolder);
 end;
 
 function TFormMain.HandleShortcut(AKey: Word; AShift: TShiftState): Boolean;
@@ -2988,7 +2707,7 @@ begin
   else if (M = [ssCtrl]) and (AKey = vkJ) then
     Acao := procedure begin TogglePanel(FPanelDownloads); end
   else if (M = [ssCtrl, ssShift]) and (AKey = vkB) then
-    Acao := procedure begin SetBookmarkBarShown(not FSettings.ShowBookmarkBar); end
+    Acao := procedure begin NecoApp.SetBookmarkBarShown(not FSettings.ShowBookmarkBar); end
   else if (M = [ssCtrl, ssShift]) and (AKey = vkO) then
     Acao := procedure begin TogglePanel(FPanelBookmarks); end
   else if (M = [ssCtrl]) and (AKey = vkW) then
