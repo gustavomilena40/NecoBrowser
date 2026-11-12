@@ -111,6 +111,7 @@ $(PostBuildEvent)]]></PostBuildEvent>
         <DCCReference Include="src\ui\Neco.UI.BookmarkBar.pas"/>
         <DCCReference Include="src\ui\Neco.UI.History.pas"/>
         <DCCReference Include="src\ui\Neco.UI.DefaultBrowser.pas"/>
+        <DCCReference Include="src\ui\Neco.UI.Shortcuts.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Instance.pas"/>
         <DCCReference Include="src\ui\Neco.UI.App.pas"/>
         <DCCReference Include="src\ui\Neco.UI.Main.pas">

@@ -135,6 +135,11 @@ const
   ICO_LUPA =
     'M0 0 M24 24 M3 11 C3 15.418 6.582 19 11 19 C15.418 19 19 15.418 19 11 C19 6.582 15.418 3 1' +
     '1 3 C6.582 3 3 6.582 3 11 Z M21 21 L16.7 16.7';
+  // Teclado (lucide keyboard): a tela de atalhos.
+  ICO_TECLADO =
+    'M0 0 M24 24 M4 4 L20 4 C21.105 4 22 4.895 22 6 L22 18 C22 19.105 21.105 20 20 20 L4 20 C2' +
+    '.895 20 2 19.105 2 18 L2 6 C2 4.895 2.895 4 4 4 Z M6 8 L6.01 8 M10 8 L10.01 8 M14 8 L14.0' +
+    '1 8 M18 8 L18.01 8 M8 12 L8.01 12 M12 12 L12.01 12 M16 12 L16.01 12 M7 16 L17 16';
   // Pente de memória (lucide memory-stick, sem os chanfros laterais).
   ICO_MEMORIA =
     'M0 0 M24 24 M6 19 L6 16 M10 19 L10 16 M14 19 L14 16 M18 19 L18 16 M8 11 L8 9 M12 11 L12 9' +

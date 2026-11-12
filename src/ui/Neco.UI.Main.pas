@@ -14,7 +14,7 @@ uses
   Neco.Core.Settings, Neco.Core.Blocklist, Neco.Core.Bookmarks, Neco.Core.History,
   Neco.Engine.Intf, Neco.UI.Theme, Neco.UI.Tab, Neco.UI.Frame, Neco.UI.Neco,
   Neco.UI.SidePanel, Neco.UI.Downloads, Neco.UI.Bookmarks, Neco.UI.Settings, Neco.UI.ErrorView,
-  Neco.UI.BookmarkBar, Neco.UI.History, Neco.UI.App;
+  Neco.UI.BookmarkBar, Neco.UI.History, Neco.UI.Shortcuts, Neco.UI.App;
 
 type
   TFormMain = class(TForm, INecoWindow)
@@ -111,6 +111,7 @@ type
     FPanelBookmarks: TNecoBookmarksPanel;
     FPanelSettings: TNecoSettingsPanel;
     FPanelHistory: TNecoHistoryPanel;
+    FPanelShortcuts: TNecoShortcutsPanel;
     // tela cheia: pedida pela página (vídeo) ou pelo F11
     FFullVideo, FFullKey, FFull: Boolean;
 
@@ -336,6 +337,7 @@ const
   // menu de contexto da aba
   CMenuTabNewWindow = 10;
   CMenuTabClose = 11;
+  CMenuShortcuts = 12;
   CMenuTabToWindow = 100; // + índice em FMenuWindows
   // Quanto o mouse precisa sair da faixa, na vertical, para a aba virar janela (px lógicos).
   CTearOffDistance = 30;
@@ -395,6 +397,8 @@ begin
     ShowPanel(FPanelSettings);
   if SameText(P, 'historico') then
     ShowPanel(FPanelHistory);
+  if SameText(P, 'atalhos') then
+    ShowPanel(FPanelShortcuts);
   // Teste de várias janelas sem teclado: NECO_TESTE_JANELA=1 abre a segunda (como o Ctrl+N).
   if FFirstWindow and (System.SysUtils.GetEnvironmentVariable('NECO_TESTE_JANELA') = '1') then
     TThread.ForceQueue(nil, procedure begin NewWindow; end);
@@ -1377,6 +1381,7 @@ begin
   FPanelHistory.Restyle;
   if FPanelHistory.Visible then
     FPanelHistory.Rebuild; // as linhas pegam a cor na montagem
+  FPanelShortcuts.Restyle;
   FBookmarkBar.Restyle;
   FBookmarkBar.Rebuild; // as estrelas pegam a cor na montagem
 end;
@@ -2458,6 +2463,11 @@ begin
   FPanelHistory.History := FHistory;
   FPanelHistory.OnOpen := BookmarkOpen;
   FPanelHistory.OnClear := HistoryClear;
+
+  FPanelShortcuts := TNecoShortcutsPanel.Create(Self);
+  FPanelShortcuts.Parent := FBody;
+  FPanelShortcuts.Visible := False;
+  FPanelShortcuts.OnCloseRequest := PanelCloseRequest;
 end;
 
 procedure TFormMain.ShowPanel(APanel: TNecoSidePanel);
@@ -2469,6 +2479,7 @@ begin
   if (APanel = FPanelHistory) and not FPanelHistory.Visible then
     FPanelHistory.Rebuild;
   FPanelHistory.Visible := APanel = FPanelHistory;
+  FPanelShortcuts.Visible := APanel = FPanelShortcuts;
   UpdatePanelButtons;
 end;
 
@@ -2497,7 +2508,8 @@ procedure TFormMain.UpdatePanelButtons;
 
 begin
   // A seta fica marcada quando o painel aberto é um dos do menu.
-  Mark(FBtnMenu, FPanelBookmarks.Visible or FPanelDownloads.Visible or FPanelHistory.Visible);
+  Mark(FBtnMenu, FPanelBookmarks.Visible or FPanelDownloads.Visible or FPanelHistory.Visible or
+    FPanelShortcuts.Visible);
   Mark(FBtnSettings, FPanelSettings.Visible);
 end;
 
@@ -3112,6 +3124,8 @@ begin
       AddMenuRow(CMenuTheme, ICO_SOL, 'Tema claro', '', Palette.Text, False)
     else
       AddMenuRow(CMenuTheme, ICO_LUA, 'Tema escuro', '', Palette.Text, False);
+    AddMenuRow(CMenuShortcuts, ICO_TECLADO, 'Atalhos do teclado', 'F1', Palette.Text,
+      FPanelShortcuts.Visible);
     AddMenuRow(CMenuQuit, ICO_FECHAR, 'Sair', 'Ctrl+Shift+Q', Palette.Text, False);
   finally
     FMenuBox.EndUpdate;
@@ -3174,6 +3188,8 @@ begin
         CMenuTabClose:
           if FTabs.IndexOf(FMenuTab) >= 0 then
             CloseTab(FMenuTab);
+        CMenuShortcuts:
+          TogglePanel(FPanelShortcuts);
       else
         // A janela pode ter fechado com o menu aberto.
         if (Acao >= CMenuTabToWindow) and (Acao - CMenuTabToWindow < Length(FMenuWindows)) and
@@ -3265,6 +3281,8 @@ begin
     Acao := procedure begin NewWindow; end
   else if (M = [ssCtrl, ssShift]) and (AKey = vkQ) then
     Acao := NecoApp.CloseAllWindows
+  else if (M = []) and (AKey = vkF1) then
+    Acao := procedure begin TogglePanel(FPanelShortcuts); end
   else if (M = [ssCtrl]) and (AKey = vkO) then
     Acao := procedure begin OpenFileClick(nil); end
   else if (M = [ssCtrl]) and (AKey = vkH) then

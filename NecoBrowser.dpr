@@ -28,6 +28,7 @@ uses
   Neco.UI.BookmarkBar in 'src\ui\Neco.UI.BookmarkBar.pas',
   Neco.UI.History in 'src\ui\Neco.UI.History.pas',
   Neco.UI.DefaultBrowser in 'src\ui\Neco.UI.DefaultBrowser.pas',
+  Neco.UI.Shortcuts in 'src\ui\Neco.UI.Shortcuts.pas',
   Neco.UI.Instance in 'src\ui\Neco.UI.Instance.pas',
   Neco.UI.App in 'src\ui\Neco.UI.App.pas',
   Neco.UI.Main in 'src\ui\Neco.UI.Main.pas' {FormMain};
